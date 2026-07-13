@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fraud Detection — Control Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #080b14;
+      --bg-secondary: #0d1220;
+      --bg-card: rgba(16, 22, 40, 0.85);
+      --border: rgba(99, 130, 255, 0.15);
+      --border-bright: rgba(99, 130, 255, 0.4);
+      --accent: #6382ff;
+      --accent-glow: rgba(99, 130, 255, 0.35);
+      --accent2: #36d9b8;
+      --danger: #ff4d6d;
+      --warning: #ffaa2e;
+      --success: #36d98a;
+      --text-primary: #e8eeff;
+      --text-secondary: #8892b0;
+      --text-muted: #4a5568;
+      --font: 'Inter', sans-serif;
+      --mono: 'JetBrains Mono', monospace;
+      --radius: 16px;
+      --radius-sm: 10px;
+      --transition: 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: var(--font); background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; overflow-x: hidden; }
+    body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse 80% 60% at 20% 10%, rgba(99,130,255,0.07) 0%, transparent 70%), radial-gradient(ellipse 60% 50% at 80% 80%, rgba(54,217,184,0.05) 0%, transparent 70%); pointer-events: none; z-index: 0; }
+    body::after { content: ''; position: fixed; inset: 0; background-image: linear-gradient(rgba(99,130,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(99,130,255,0.03) 1px, transparent 1px); background-size: 40px 40px; pointer-events: none; z-index: 0; }
+    .app { position: relative; z-index: 1; }
+    header { position: sticky; top: 0; z-index: 100; background: rgba(8,11,20,0.85); backdrop-filter: blur(24px); border-bottom: 1px solid var(--border); padding: 0 32px; height: 64px; display: flex; align-items: center; justify-content: space-between; }
+    .logo { display: flex; align-items: center; gap: 12px; }
+    .logo-icon { width: 36px; height: 36px; background: linear-gradient(135deg, var(--accent), var(--accent2)); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; box-shadow: 0 0 20px var(--accent-glow); }
+    .logo-text { font-size: 16px; font-weight: 700; letter-spacing: -0.3px; }
+    .logo-sub { font-size: 11px; color: var(--text-secondary); }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .health-badge { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 100px; font-size: 12px; font-weight: 600; border: 1px solid; transition: var(--transition); }
+    .health-badge.online { color: var(--success); border-color: rgba(54,217,138,0.3); background: rgba(54,217,138,0.08); }
+    .health-badge.offline { color: var(--danger); border-color: rgba(255,77,109,0.3); background: rgba(255,77,109,0.08); }
+    .health-badge.checking { color: var(--warning); border-color: rgba(255,170,46,0.3); background: rgba(255,170,46,0.08); }
+    .pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse-ring 2s ease-in-out infinite; }
+    @keyframes pulse-ring { 0%,100%{box-shadow:0 0 0 0 currentColor;opacity:1}50%{box-shadow:0 0 0 4px transparent;opacity:0.7} }
+    .refresh-btn { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 14px; transition: var(--transition); }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+    nav { background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 0 32px; display: flex; overflow-x: auto; }
+    nav::-webkit-scrollbar { display: none; }
+    .nav-tab { padding: 14px 20px; font-size: 13px; font-weight: 500; color: var(--text-secondary); cursor: pointer; border: none; background: transparent; border-bottom: 2px solid transparent; white-space: nowrap; transition: var(--transition); display: flex; align-items: center; gap: 7px; }
+    .nav-tab:hover { color: var(--text-primary); }
+    .nav-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    main { padding: 28px 32px; max-width: 1600px; margin: 0 auto; }
+    .section { display: none; }
+    .section.active { display: block; }
+    .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); backdrop-filter: blur(12px); transition: var(--transition); }
+    .card:hover { border-color: var(--border-bright); }
+    .card-header { padding: 18px 24px 0; display: flex; align-items: center; justify-content: space-between; }
+    .card-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; }
+    .card-body { padding: 20px 24px; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .kpi-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px 24px; position: relative; overflow: hidden; transition: var(--transition); }
+    .kpi-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; border-radius: var(--radius) var(--radius) 0 0; }
+    .kpi-card.blue::before { background: linear-gradient(90deg, var(--accent), transparent); }
+    .kpi-card.green::before { background: linear-gradient(90deg, var(--success), transparent); }
+    .kpi-card.red::before { background: linear-gradient(90deg, var(--danger), transparent); }
+    .kpi-card.yellow::before { background: linear-gradient(90deg, var(--warning), transparent); }
+    .kpi-card.teal::before { background: linear-gradient(90deg, var(--accent2), transparent); }
+    .kpi-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-secondary); margin-bottom: 10px; }
+    .kpi-value { font-size: 30px; font-weight: 800; letter-spacing: -1px; color: var(--text-primary); line-height: 1; }
+    .kpi-sub { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+    @media(max-width:1100px){.chart-grid{grid-template-columns:1fr;}}
+    .chart-container { position: relative; height: 240px; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    label { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+    input, select { background: rgba(0,0,0,0.35); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--mono); font-size: 13px; padding: 10px 14px; outline: none; transition: var(--transition); width: 100%; }
+    input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+    select option { background: #0d1220; }
+    .btn { padding: 11px 22px; border: none; border-radius: var(--radius-sm); font-family: var(--font); font-size: 13px; font-weight: 600; cursor: pointer; transition: var(--transition); display: inline-flex; align-items: center; gap: 8px; }
+    .btn-primary { background: linear-gradient(135deg, var(--accent), #4c6ef5); color: white; box-shadow: 0 0 20px var(--accent-glow); }
+    .btn-primary:hover { box-shadow: 0 0 30px rgba(99,130,255,0.6); transform: translateY(-1px); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-secondary { background: rgba(99,130,255,0.1); border: 1px solid var(--border); color: var(--accent); }
+    .btn-secondary:hover { background: rgba(99,130,255,0.18); border-color: var(--accent); }
+    .btn-danger { background: rgba(255,77,109,0.1); border: 1px solid rgba(255,77,109,0.3); color: var(--danger); }
+    .btn-success { background: rgba(54,217,138,0.1); border: 1px solid rgba(54,217,138,0.3); color: var(--success); }
+    .btn-success:hover { background: rgba(54,217,138,0.2); }
+    .scorer-layout { display: grid; grid-template-columns: 1fr 380px; gap: 20px; }
+    @media(max-width:900px){.scorer-layout{grid-template-columns:1fr;}}
+    .score-result { display: flex; flex-direction: column; gap: 16px; }
+    .gauge-wrap { display: flex; flex-direction: column; align-items: center; padding: 20px; background: rgba(0,0,0,0.3); border-radius: var(--radius-sm); border: 1px solid var(--border); }
+    .gauge-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 12px; }
+    .gauge-svg { width: 160px; height: 90px; }
+    .gauge-value { font-size: 28px; font-weight: 800; margin-top: 4px; }
+    .gauge-sub { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 100px; margin-top: 6px; }
+    .gauge-sub.fraud { color: var(--danger); background: rgba(255,77,109,0.1); border: 1px solid rgba(255,77,109,0.3); }
+    .gauge-sub.legit { color: var(--success); background: rgba(54,217,138,0.1); border: 1px solid rgba(54,217,138,0.3); }
+    .shap-title { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 10px; }
+    .shap-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; font-size: 11px; }
+    .shap-name { width: 130px; color: var(--text-secondary); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .shap-track { flex: 1; height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
+    .shap-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+    .shap-fill.pos { background: linear-gradient(90deg, var(--danger), #ff8fa3); }
+    .shap-fill.neg { background: linear-gradient(90deg, var(--success), #63d9a0); }
+    .shap-num { width: 55px; text-align: right; font-family: var(--mono); color: var(--text-secondary); }
+    .score-meta { display: flex; flex-wrap: wrap; gap: 8px; }
+    .meta-chip { font-size: 11px; font-family: var(--mono); padding: 4px 10px; border-radius: 6px; background: rgba(99,130,255,0.1); border: 1px solid rgba(99,130,255,0.2); color: var(--text-secondary); }
+    .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; color: var(--text-muted); text-align: center; gap: 12px; }
+    .empty-icon { font-size: 40px; opacity: 0.4; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    thead th { text-align: left; padding: 10px 14px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+    tbody tr { border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.15s; }
+    tbody tr:hover { background: rgba(99,130,255,0.05); }
+    tbody td { padding: 10px 14px; color: var(--text-secondary); font-family: var(--mono); }
+    tbody td.primary { color: var(--text-primary); font-family: var(--font); }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .badge-fraud { background: rgba(255,77,109,0.15); color: var(--danger); border: 1px solid rgba(255,77,109,0.2); }
+    .badge-legit { background: rgba(54,217,138,0.1); color: var(--success); border: 1px solid rgba(54,217,138,0.2); }
+    .badge-yes { background: rgba(255,170,46,0.1); color: var(--warning); border: 1px solid rgba(255,170,46,0.2); }
+    .badge-no { background: rgba(255,255,255,0.04); color: var(--text-muted); border: 1px solid var(--border); }
+    .badge-active { background: rgba(54,217,138,0.1); color: var(--success); border: 1px solid rgba(54,217,138,0.2); }
+    .model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+    .model-card { background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 18px; transition: var(--transition); }
+    .model-card.active-model { border-color: rgba(54,217,138,0.4); background: rgba(54,217,138,0.04); }
+    .model-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+    .model-version { font-size: 14px; font-weight: 700; font-family: var(--mono); }
+    .model-name { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+    .model-metric { margin-bottom: 6px; font-size: 12px; }
+    .model-metric-label { color: var(--text-muted); }
+    .model-metric-val { color: var(--text-primary); font-family: var(--mono); font-weight: 600; }
+    .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+    .service-card { background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+    .service-header { display: flex; align-items: center; gap: 10px; }
+    .service-icon { font-size: 22px; }
+    .service-name { font-size: 13px; font-weight: 600; }
+    .service-port { font-size: 10px; font-family: var(--mono); color: var(--text-muted); margin-top: 1px; }
+    .service-status { font-size: 11px; font-weight: 600; }
+    .status-ok { color: var(--success); }
+    .status-err { color: var(--danger); }
+    .status-checking { color: var(--warning); }
+    .service-link { font-size: 11px; color: var(--accent); text-decoration: none; }
+    .service-link:hover { text-decoration: underline; }
+    .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+    .section-title { font-size: 20px; font-weight: 700; }
+    .section-sub { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+    #toast-container { position: fixed; bottom: 28px; right: 28px; display: flex; flex-direction: column; gap: 10px; z-index: 9999; }
+    .toast { padding: 12px 18px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; max-width: 340px; backdrop-filter: blur(20px); border: 1px solid; animation: toastIn 0.3s ease, toastOut 0.3s ease 2.7s forwards; }
+    .toast.success { background: rgba(54,217,138,0.15); border-color: rgba(54,217,138,0.3); color: var(--success); }
+    .toast.error { background: rgba(255,77,109,0.15); border-color: rgba(255,77,109,0.3); color: var(--danger); }
+    .toast.info { background: rgba(99,130,255,0.15); border-color: rgba(99,130,255,0.3); color: var(--accent); }
+    @keyframes toastIn { from{transform:translateX(30px);opacity:0}to{transform:none;opacity:1} }
+    @keyframes toastOut { to{transform:translateX(30px);opacity:0} }
+    .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid transparent; border-top-color: currentColor; animation: spin 0.7s linear infinite; display: inline-block; }
+    @keyframes spin { to{transform:rotate(360deg)} }
+    .skeleton { background: linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 6px; }
+    @keyframes shimmer { to{background-position:-200% 0} }
+    .info-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px; }
+    .info-row:last-child { border-bottom: none; }
+    .info-key { color: var(--text-secondary); }
+    .info-val { font-family: var(--mono); color: var(--text-primary); }
+    .mb-4 { margin-bottom: 16px; }
+    .mt-4 { margin-top: 16px; }
+    .flex { display: flex; }
+    .gap-2 { gap: 8px; }
+    .w-full { width: 100%; }
+    @keyframes glow-pulse { 0%,100%{box-shadow:0 0 20px var(--accent-glow)}50%{box-shadow:0 0 40px rgba(99,130,255,0.6)} }
+    .reloading { animation: glow-pulse 1s ease-in-out infinite; }
+  </style>
+</head>
+<body>
+<div class="app">
+<header>
+  <div class="logo">
+    <div class="logo-icon" style="background: linear-gradient(135deg, var(--accent), #4c6ef5);">RL</div>
+    <div>
+      <div class="logo-text">Risk Ledger</div>
+      <div class="logo-sub">Transaction Monitoring Control Center</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div id="health-badge" class="health-badge checking">
+      <span class="pulse-dot"></span>
+      <span id="health-text">Checking...</span>
+    </div>
+    <button class="refresh-btn" onclick="refreshAll()" title="Refresh (R)">Refresh</button>
+  </div>
+</header>
+
+<nav>
+  <button class="nav-tab active" onclick="switchTab('overview',this)">Overview</button>
+  <button class="nav-tab" onclick="switchTab('scorer',this)">Score Transaction</button>
+  <button class="nav-tab" onclick="switchTab('models',this)">Models</button>
+  <button class="nav-tab" onclick="switchTab('predictions',this)">Live Feed</button>
+  <button class="nav-tab" onclick="switchTab('drift',this)">Drift Monitor</button>
+  <button class="nav-tab" onclick="switchTab('services',this)">Services</button>
+</nav>
+
+<main>
+
+<!-- OVERVIEW -->
+<section id="section-overview" class="section active">
+  <div class="section-header">
+    <div>
+      <div class="section-title">Pipeline Overview</div>
+      <div class="section-sub">Live metrics — last 1 hour · auto-refreshes every 10s</div>
+    </div>
+    <div id="last-update" style="font-size:12px;color:var(--text-muted)"></div>
+  </div>
+  <div class="kpi-grid" id="kpi-grid">
+    <div class="kpi-card blue skeleton" style="height:98px"></div>
+    <div class="kpi-card skeleton" style="height:98px"></div>
+    <div class="kpi-card skeleton" style="height:98px"></div>
+    <div class="kpi-card skeleton" style="height:98px"></div>
+    <div class="kpi-card skeleton" style="height:98px"></div>
+  </div>
+  <div class="chart-grid">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Fraud Flag Rate (%) · last 60 min</span></div>
+      <div class="card-body"><div class="chart-container"><canvas id="fraudRateChart"></canvas></div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Traffic Split by Model</span></div>
+      <div class="card-body" style="display: flex; align-items: center; justify-content: space-between; gap: 16px;">
+        <div class="chart-container" style="flex: 1; height: 240px; position: relative;">
+          <canvas id="trafficSplitChart"></canvas>
+        </div>
+        <div id="trafficLegend" style="display: flex; flex-direction: column; gap: 10px; min-width: 140px; font-size: 13px; color: var(--text-secondary); max-height: 240px; overflow-y: auto; padding-right: 8px; border-left: 1px solid var(--border); padding-left: 16px;">
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="chart-grid">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Latency — avg · p95 · p99 · inference (ms)</span></div>
+      <div class="card-body"><div class="chart-container"><canvas id="latencyChart"></canvas></div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">A/B Test Performance</span></div>
+      <div class="card-body" id="ab-card-body">
+        <div class="empty-state"><p>Waiting for labelled data...</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SCORER -->
+<section id="section-scorer" class="section">
+  <div class="section-header">
+    <div>
+      <div class="section-title">Score a Transaction</div>
+      <div class="section-sub">Submit any transaction to the live scoring API</div>
+    </div>
+    <button class="btn btn-secondary" onclick="fillDemo()">Auto-fill Demo (INR)</button>
+  </div>
+  <div class="scorer-layout">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Transaction Fields</span></div>
+      <div class="card-body">
+        <div class="form-grid">
+          <div class="form-group"><label>Transaction ID</label><input id="f-txn_id" placeholder="txn_abc123" /></div>
+          <div class="form-group"><label>User ID</label><input id="f-user_id" placeholder="user_001" /></div>
+          <div class="form-group"><label>Amount (INR)</label><input id="f-amount" type="number" step="0.01" placeholder="₹25,000.00" /></div>
+          <div class="form-group"><label>Currency</label><input id="f-currency" value="INR" maxlength="3" readonly style="opacity: 0.7; cursor: not-allowed;" /></div>
+          <div class="form-group"><label>Merchant ID</label><input id="f-merchant_id" placeholder="merchant_x" /></div>
+          <div class="form-group"><label>Merchant Category</label><input id="f-merchant_category" placeholder="electronics" /></div>
+          <div class="form-group"><label>Device ID</label><input id="f-device_id" placeholder="device_99" /></div>
+          <div class="form-group"><label>IP Country (2-letter)</label><input id="f-ip_country" placeholder="IN" maxlength="2" /></div>
+          <div class="form-group"><label>Channel</label>
+            <select id="f-channel">
+              <option value="card_not_present">card_not_present</option>
+              <option value="card_present">card_present</option>
+              <option value="upi">upi</option>
+              <option value="login">login</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Timestamp (ISO)</label><input id="f-timestamp" placeholder="2024-01-15T10:30:00Z" /></div>
+        </div>
+        <div class="mt-4">
+          <button class="btn btn-primary w-full" id="score-btn" onclick="submitScore()">Score Transaction</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Result</span></div>
+      <div class="card-body">
+        <div id="score-result-area">
+          <div class="empty-state"><p>Fill out the form and click Score Transaction</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- MODELS -->
+<section id="section-models" class="section">
+  <div class="section-header">
+    <div>
+      <div class="section-title">Model Registry</div>
+      <div class="section-sub">Active models and version history</div>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-success" id="reload-btn" onclick="forceReload()">Force Reload</button>
+      <a href="http://localhost:5000" target="_blank" class="btn btn-secondary">Open MLflow</a>
+    </div>
+  </div>
+  <div class="card mb-4">
+    <div class="card-header"><span class="card-title">Currently Loaded Models (API)</span></div>
+    <div class="card-body" id="loaded-models-panel"><div class="empty-state"><span class="spinner"></span></div></div>
+  </div>
+  <div class="card">
+    <div class="card-header"><span class="card-title">Registry History</span></div>
+    <div class="card-body" id="registry-panel"><div class="empty-state"><span class="spinner"></span></div></div>
+  </div>
+</section>
+
+<!-- PREDICTIONS FEED -->
+<section id="section-predictions" class="section">
+  <div class="section-header">
+    <div><div class="section-title">Live Predictions Feed</div><div class="section-sub">25 most recent scored transactions</div></div>
+    <button class="btn btn-secondary" onclick="loadStats()">Refresh</button>
+  </div>
+  <div class="card">
+    <div class="card-body">
+      <div class="table-wrap" id="predictions-table"><div class="empty-state"><span class="spinner"></span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- DRIFT -->
+<section id="section-drift" class="section">
+  <div class="section-header">
+    <div><div class="section-title">Drift Monitor</div><div class="section-sub">PSI checks and retraining events</div></div>
+  </div>
+  <div class="card">
+    <div class="card-body" id="drift-panel"><div class="empty-state"><span class="spinner"></span></div></div>
+  </div>
+</section>
+
+<!-- SERVICES -->
+<section id="section-services" class="section">
+  <div class="section-header">
+    <div><div class="section-title">Pipeline Services</div><div class="section-sub">Status of all docker-compose services</div></div>
+  </div>
+  <div class="services-grid">
+    <div class="service-card">
+      <div class="service-header"><div class="service-name">Scoring API</div><div class="service-port">localhost:8000</div></div>
+      <div class="service-status status-checking" id="svc-api-status">Checking...</div>
+      <a href="http://localhost:8000/docs" target="_blank" class="service-link">Open Swagger Docs ↗</a>
+    </div>
+    <div class="service-card">
+      <div class="service-header"><div class="service-name">MLflow</div><div class="service-port">localhost:5000</div></div>
+      <div class="service-status status-checking" id="svc-mlflow-status">Checking...</div>
+      <a href="http://localhost:5000" target="_blank" class="service-link">Open MLflow UI ↗</a>
+    </div>
+    <div class="service-card">
+      <div class="service-header"><div class="service-name">Streamlit Dashboard</div><div class="service-port">localhost:8501</div></div>
+      <div class="service-status status-checking" id="svc-dashboard-status">Checking...</div>
+      <a href="http://localhost:8501" target="_blank" class="service-link">Open Dashboard ↗</a>
+    </div>
+    <div class="service-card">
+      <div class="service-header"><div class="service-name">PostgreSQL</div><div class="service-port">localhost:5432</div></div>
+      <div class="service-status" style="color:var(--text-muted)">Internal (via API)</div>
+      <span style="font-size:11px;color:var(--text-muted)">Proxied through /stats endpoint</span>
+    </div>
+    <div class="service-card">
+      <div class="service-header"><div class="service-name">Redis Feature Store</div><div class="service-port">localhost:6379</div></div>
+      <div class="service-status status-checking" id="svc-redis-status">Checking via /health...</div>
+      <span style="font-size:11px;color:var(--text-muted)">Live feature store for inference</span>
+    </div>
+    <div class="service-card">
+      <div class="service-header"><div class="service-name">Producer + Feature Engine</div><div class="service-port">Internal</div></div>
+      <div class="service-status" style="color:var(--text-muted)">Background</div>
+      <span style="font-size:11px;color:var(--text-muted)">Generating synthetic transactions</span>
+    </div>
+  </div>
+  <div style="margin-top:20px">
+    <div class="card">
+      <div class="card-header"><span class="card-title">API Health Details</span></div>
+      <div class="card-body" id="health-details"><div class="empty-state"><span class="spinner"></span></div></div>
+    </div>
+  </div>
+</section>
+
+</main>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+const API = 'http://localhost:8000';
+let charts = {};
+let statsData = {};
+let healthData = {};
+
+function toast(msg, type='info') {
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+
+function fmt(n, d=2) { return (n == null || n === '') ? '—' : Number(n).toFixed(d); }
+function fmtPct(n) { return n == null ? '—' : fmt(n,1) + '%'; }
+function fmtMs(n) { return n == null ? '—' : fmt(n,1) + ' ms'; }
+function timeAgo(iso) {
+  const s = Math.floor((new Date() - new Date(iso)) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  return Math.floor(s/3600) + 'h ago';
+}
+
+function switchTab(name, btn) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(b => b.classList.remove('active'));
+  document.getElementById('section-' + name).classList.add('active');
+  btn.classList.add('active');
+  if (name === 'predictions') renderPredictions();
+  if (name === 'drift') renderDrift();
+  if (name === 'models') renderModels();
+  if (name === 'services') { checkHealth(); checkSingleService('svc-api-status', API+'/health'); checkSingleService('svc-mlflow-status','http://localhost:5000'); checkSingleService('svc-dashboard-status','http://localhost:8501'); }
+}
+
+document.addEventListener('keydown', e => { if ((e.key==='r'||e.key==='R') && document.activeElement.tagName!=='INPUT') refreshAll(); });
+
+async function checkHealth() {
+  const badge = document.getElementById('health-badge');
+  const text = document.getElementById('health-text');
+  try {
+    const res = await fetch(API+'/health', {signal:AbortSignal.timeout(4000)});
+    healthData = await res.json();
+    const ok = healthData.status === 'ok';
+    badge.className = 'health-badge ' + (ok ? 'online' : 'offline');
+    text.textContent = ok ? 'System Online' : 'Degraded';
+    const redisSt = document.getElementById('svc-redis-status');
+    if (redisSt) { redisSt.textContent = healthData.redis_ok ? '✓ Online' : '✗ Offline'; redisSt.className = 'service-status ' + (healthData.redis_ok ? 'status-ok' : 'status-err'); }
+    const hdp = document.getElementById('health-details');
+    if (hdp) {
+      const versions = (healthData.model_versions||[]).join(', ') || 'none';
+      const lastCheck = healthData.last_reload_check_at ? new Date(healthData.last_reload_check_at*1000).toLocaleTimeString() : '—';
+      hdp.innerHTML = `
+        <div class="info-row"><span class="info-key">Status</span><span class="info-val">${healthData.status}</span></div>
+        <div class="info-row"><span class="info-key">Redis</span><span class="info-val" style="color:${healthData.redis_ok?'var(--success)':'var(--danger)'}">${healthData.redis_ok?'✓ OK':'✗ Offline'}</span></div>
+        <div class="info-row"><span class="info-key">Model</span><span class="info-val" style="color:${healthData.model_ok?'var(--success)':'var(--danger)'}">${healthData.model_ok?'✓ Loaded':'✗ Not loaded'}</span></div>
+        <div class="info-row"><span class="info-key">Active Versions</span><span class="info-val">${versions}</span></div>
+        <div class="info-row"><span class="info-key">Last Reload Check</span><span class="info-val">${lastCheck}</span></div>
+        <div class="info-row"><span class="info-key">Last Reload Error</span><span class="info-val" style="color:${healthData.last_reload_error?'var(--danger)':'var(--text-muted)'}">${healthData.last_reload_error||'None'}</span></div>
+      `;
+    }
+  } catch {
+    badge.className = 'health-badge offline';
+    text.textContent = 'API Offline';
+    healthData = {};
+  }
+}
+
+async function checkSingleService(id, url) {
+  const el = document.getElementById(id); if (!el) return;
+  try { await fetch(url, {mode:'no-cors',signal:AbortSignal.timeout(3000)}); el.textContent='✓ Online'; el.className='service-status status-ok'; }
+  catch { el.textContent='✗ Unreachable'; el.className='service-status status-err'; }
+}
+
+async function loadStats() {
+  try {
+    const res = await fetch(API+'/stats', {signal:AbortSignal.timeout(8000)});
+    if (!res.ok) throw new Error('stats error');
+    statsData = await res.json();
+    renderKPIs(); renderFraudRateChart(); renderTrafficSplitChart(); renderLatencyChart(); renderABMetrics();
+    document.getElementById('last-update').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch(e) {
+    document.getElementById('last-update').textContent = 'Load failed — is the API running?';
+    toast('Could not load stats', 'error');
+  }
+}
+
+function renderKPIs() {
+  const ov = (statsData.overview||[])[0]||{};
+  const flagRate = ov.total_predictions > 0 ? (ov.total_flagged/ov.total_predictions*100).toFixed(1) : '—';
+  document.getElementById('kpi-grid').innerHTML = `
+    <div class="kpi-card blue"><div class="kpi-label">Total Predictions</div><div class="kpi-value">${Number(ov.total_predictions||0).toLocaleString()}</div><div class="kpi-sub">last 1 hour</div></div>
+    <div class="kpi-card red"><div class="kpi-label">Flagged Transactions</div><div class="kpi-value">${Number(ov.total_flagged||0).toLocaleString()}</div><div class="kpi-sub">${flagRate}% flag rate</div></div>
+    <div class="kpi-card teal"><div class="kpi-label">Avg Latency</div><div class="kpi-value">${fmtMs(ov.avg_latency_ms)}</div><div class="kpi-sub">p95: ${fmtMs(ov.p95_latency_ms)} · p99: ${fmtMs(ov.p99_latency_ms)}<br>inference: avg ${ov.avg_inference_ms!=null?fmt(ov.avg_inference_ms,3)+'ms':'—'} · p99 ${ov.p99_inference_ms!=null?fmt(ov.p99_inference_ms,3)+'ms':'—'}</div></div>
+    <div class="kpi-card green"><div class="kpi-label">SLA Compliance</div><div class="kpi-value">${fmtPct(ov.sla_compliance_pct)}</div><div class="kpi-sub">&lt;100ms threshold</div></div>
+    <div class="kpi-card yellow"><div class="kpi-label">Active Models</div><div class="kpi-value">${(healthData.model_versions||[]).length||'—'}</div><div class="kpi-sub">${(healthData.model_versions||[]).join(' · ')||'not loaded'}</div></div>
+  `;
+}
+
+const CD = { animation:{duration:500}, responsive:true, maintainAspectRatio:false, plugins:{legend:{labels:{color:'#8892b0',font:{family:'Inter',size:11},boxWidth:12}}}, scales:{x:{ticks:{color:'#4a5568',font:{size:10},maxTicksLimit:12,maxRotation:0},grid:{color:'rgba(255,255,255,0.04)'}},y:{ticks:{color:'#4a5568',font:{size:10}},grid:{color:'rgba(255,255,255,0.04)'}}} };
+
+function fmtMinuteLabel(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  // Show local time (browser's timezone) in HH:MM format
+  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', hour12:false});
+}
+
+function destroyChart(id) { if(charts[id]){charts[id].destroy();delete charts[id];} }
+
+function renderFraudRateChart() {
+  const rows = [...(statsData.fraud_rate_trend||[])].reverse();
+  const labels = rows.map(r => fmtMinuteLabel(r.minute));
+  destroyChart('fraudRate');
+  charts.fraudRate = new Chart(document.getElementById('fraudRateChart'),{type:'line',data:{labels,datasets:[
+    {label:'Flag Rate %',data:rows.map(r=>r.total>0?(r.flagged/r.total*100).toFixed(2):0),borderColor:'#ff4d6d',backgroundColor:'rgba(255,77,109,0.08)',tension:0.4,fill:true,pointRadius:2,borderWidth:2},
+    {label:'Avg Prob %',data:rows.map(r=>(r.avg_prob*100).toFixed(2)),borderColor:'#6382ff',backgroundColor:'transparent',tension:0.4,pointRadius:2,borderWidth:1.5,borderDash:[4,4]}
+  ]},options:CD});
+}
+
+function renderTrafficSplitChart() {
+  const rows = statsData.traffic_split||[];
+  destroyChart('traffic');
+  const legendEl = document.getElementById('trafficLegend');
+  if (legendEl) legendEl.innerHTML = '';
+  if (!rows.length) return;
+  const colors = ['#6382ff','#36d9b8','#ff4d6d','#ffaa2e','#a855f7','#d946ef','#f43f5e','#10b981'];
+  charts.traffic = new Chart(document.getElementById('trafficSplitChart'),{
+    type:'doughnut',
+    data:{
+      labels:rows.map(r=>r.model_version),
+      datasets:[{
+        data:rows.map(r=>r.count),
+        backgroundColor:colors.slice(0, rows.length),
+        borderColor:'rgba(0,0,0,0)',
+        borderWidth:2,
+        hoverOffset:8
+      }]
+    },
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      plugins:{
+        legend:{ display: false }
+      },
+      animation:{duration:500}
+    }
+  });
+  
+  if (legendEl) {
+    legendEl.innerHTML = rows.map((r, i) => {
+      const color = colors[i % colors.length];
+      return `<div style="display: flex; align-items: center; gap: 8px;">
+        <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: ${color}; flex-shrink: 0;"></span>
+        <span style="font-weight: 500; color: var(--text-primary);">Model ${r.model_version}</span>
+        <span style="color: var(--text-muted); font-size: 11px;">(${r.count})</span>
+      </div>`;
+    }).join('');
+  }
+}
+
+function renderLatencyChart() {
+  const rows = [...(statsData.latency_timeseries||[])].reverse();
+  const labels = rows.map(r => fmtMinuteLabel(r.minute));
+  destroyChart('latency');
+  charts.latency = new Chart(document.getElementById('latencyChart'),{type:'line',data:{labels,datasets:[
+    {label:'Avg Total',data:rows.map(r=>r.avg_ms),borderColor:'#36d9b8',backgroundColor:'rgba(54,217,184,0.08)',tension:0.4,fill:true,pointRadius:2,borderWidth:2},
+    {label:'p95',data:rows.map(r=>r.p95_ms),borderColor:'#ffaa2e',backgroundColor:'transparent',tension:0.4,pointRadius:2,borderWidth:1.5,borderDash:[4,4]},
+    {label:'p99',data:rows.map(r=>r.p99_ms),borderColor:'#ff4d6d',backgroundColor:'transparent',tension:0.4,pointRadius:2,borderWidth:1.5,borderDash:[6,3]},
+    {label:'Avg Inference',data:rows.map(r=>r.avg_inference_ms),borderColor:'#a855f7',backgroundColor:'rgba(168,85,247,0.06)',tension:0.4,fill:true,pointRadius:2,borderWidth:1.5}
+  ]},options:CD});
+}
+
+function renderABMetrics() {
+  const rows = statsData.ab_metrics||[];
+  const el = document.getElementById('ab-card-body');
+  if (!rows.length) { el.innerHTML='<div class="empty-state"><span class="empty-icon">🔬</span><p>No predictions yet</p></div>'; return; }
+  el.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Model</th><th>Predictions</th><th>Precision</th><th>Recall</th><th>Avg Total</th><th>Avg Inference</th><th>Pending Labels</th></tr></thead><tbody>${rows.map(r=>{
+    const unlabelled = Number(r.unlabelled_count||0);
+    const labelled = Number(r.predictions||0) - unlabelled;
+    const labelPct = r.predictions > 0 ? ((labelled / r.predictions) * 100).toFixed(0) : '0';
+    return `<tr><td class="primary" style="font-family:var(--mono);font-size:11px">${r.model_version}</td><td>${Number(r.predictions).toLocaleString()}</td><td>${r.precision!=null?fmtPct(r.precision*100):'<span style="color:var(--text-muted)">pending</span>'}</td><td>${r.recall!=null?fmtPct(r.recall*100):'<span style="color:var(--text-muted)">pending</span>'}</td><td>${fmtMs(r.avg_latency_ms)}</td><td style="color:var(--accent2)">${r.avg_inference_ms!=null?fmt(r.avg_inference_ms,3)+' ms':'—'}</td><td><span style="font-family:var(--mono);font-size:11px;color:${unlabelled>0?'var(--warning)':'var(--success)'}">${unlabelled.toLocaleString()}</span> <span style="font-size:10px;color:var(--text-muted)">(${labelPct}% labelled)</span></td></tr>`;
+  }).join('')}</tbody></table></div>`;
+}
+
+function renderPredictions() {
+  const rows = statsData.recent_predictions||[];
+  const el = document.getElementById('predictions-table');
+  if (!rows.length) { el.innerHTML='<div class="empty-state"><span class="empty-icon">📭</span><p>No predictions yet</p></div>'; return; }
+  el.innerHTML=`<table><thead><tr><th>Txn ID</th><th>Probability</th><th>Flag</th><th>Model</th><th>Latency</th><th>Scored At</th><th>Top Feature</th></tr></thead><tbody>${rows.map(r=>{const pct=(r.fraud_probability*100).toFixed(1);const topShap=(r.top_shap_features||[])[0]||{};return`<tr><td class="primary" style="font-family:var(--mono);font-size:11px">${r.txn_id}</td><td><div style="display:flex;align-items:center;gap:6px"><div style="width:48px;height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden"><div style="width:${pct}%;height:100%;background:${r.fraud_probability>0.5?'var(--danger)':'var(--success)'};border-radius:2px"></div></div><span style="font-family:var(--mono);font-size:11px">${pct}%</span></div></td><td><span class="badge ${r.is_flagged?'badge-fraud':'badge-legit'}">${r.is_flagged?'FRAUD':'OK'}</span></td><td style="font-family:var(--mono);font-size:11px">${r.model_version}</td><td>${fmtMs(r.latency_ms)}</td><td style="font-size:11px">${r.scored_at?timeAgo(r.scored_at):'—'}</td><td style="font-family:var(--mono);font-size:10px;color:var(--text-muted)">${topShap.feature||'—'}</td></tr>`}).join('')}</tbody></table>`;
+}
+
+function renderDrift() {
+  const rows = statsData.drift_events||[];
+  const el = document.getElementById('drift-panel');
+  if (!rows.length) { el.innerHTML='<div class="empty-state"><span class="empty-icon">📡</span><p>No drift checks yet — monitoring runs every 5 min</p></div>'; return; }
+  el.innerHTML=`<div class="table-wrap"><table><thead><tr><th>Checked At</th><th>Model Version</th><th>Max PSI</th><th>Mean PSI</th><th>Drift</th><th>Retrain</th><th>Skip Reason</th></tr></thead><tbody>${rows.map(r=>`<tr><td style="font-size:11px">${r.checked_at?timeAgo(r.checked_at):'—'}</td><td style="font-family:var(--mono);font-size:11px">${r.model_version}</td><td style="font-family:var(--mono);color:${r.max_feature_psi>0.25?'var(--danger)':'var(--text-secondary)'}">${fmt(r.max_feature_psi,4)}</td><td style="font-family:var(--mono)">${fmt(r.mean_feature_psi,4)}</td><td><span class="badge ${r.drift_detected?'badge-yes':'badge-no'}">${r.drift_detected?'DETECTED':'OK'}</span></td><td><span class="badge ${r.retrain_triggered?'badge-yes':'badge-no'}">${r.retrain_triggered?'TRIGGERED':'NO'}</span></td><td style="font-size:11px;color:var(--text-muted)">${r.retrain_skipped_reason||'—'}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function renderModels() {
+  const loadedEl = document.getElementById('loaded-models-panel');
+  const versions = healthData.model_versions||[];
+  const uris = healthData.model_uris||[];
+  loadedEl.innerHTML = !versions.length ? '<div class="empty-state"><span class="empty-icon">⚠️</span><p>No models loaded</p></div>' :
+    `<div class="model-grid">${versions.map((v,i)=>`<div class="model-card active-model"><div class="model-card-header"><div><div class="model-version">${v}</div><div class="model-name">Currently active in serving API</div></div><span class="badge badge-active">LIVE</span></div><div class="model-metric"><span class="model-metric-label">URI: </span><span class="model-metric-val" style="font-size:10px">${uris[i]||'—'}</span></div></div>`).join('')}</div>`;
+
+  const regEl = document.getElementById('registry-panel');
+  const rows = statsData.model_registry||[];
+  if (!rows.length) { regEl.innerHTML='<div class="empty-state"><span class="empty-icon">🧪</span><p>No models in registry yet</p></div>'; return; }
+  regEl.innerHTML=`<div class="model-grid">${rows.map(r=>{const m=r.metrics||{};return`<div class="model-card ${r.is_active?'active-model':''}"><div class="model-card-header"><div><div class="model-version">${r.model_version}</div><div class="model-name">${r.model_name}</div></div><span class="badge ${r.is_active?'badge-active':'badge-no'}">${r.is_active?'ACTIVE':'INACTIVE'}</span></div>${Object.entries(m).slice(0,4).map(([k,v])=>`<div class="model-metric"><span class="model-metric-label">${k}: </span><span class="model-metric-val">${typeof v==='number'?v.toFixed(4):v}</span></div>`).join('')}<div class="model-metric" style="margin-top:6px"><span class="model-metric-label">Created: </span><span class="model-metric-val" style="font-size:10px">${r.created_at?new Date(r.created_at).toLocaleString():'—'}</span></div></div>`}).join('')}</div>`;
+}
+
+async function forceReload() {
+  const btn = document.getElementById('reload-btn');
+  btn.disabled=true; btn.textContent='Reloading...'; btn.classList.add('reloading');
+  try {
+    const res = await fetch(API+'/admin/reload',{method:'POST',headers:{'X-Admin-Token':'admin_secret_token'},signal:AbortSignal.timeout(15000)});
+    const data = await res.json();
+    res.ok ? toast('Reload done. Swapped: '+data.swapped+'. Current: '+(data.current_model_versions||[]).join(', '),'success') : toast('Reload failed: '+(data.detail||'error'),'error');
+    await checkHealth(); renderModels();
+  } catch { toast('Reload failed — check API status','error'); }
+  finally { btn.disabled=false; btn.textContent='Force Reload'; btn.classList.remove('reloading'); }
+}
+
+function fillDemo() {
+  const cats=['electronics','grocery','travel','gaming','clothing'];
+  const countries=['IN','US','GB','DE','SG'];
+  const channels=['card_not_present','card_present','upi','login'];
+  const userNum = Math.floor(Math.random()*200);
+  const user_id = 'user_' + String(userNum).padStart(5, '0');
+  document.getElementById('f-txn_id').value='txn_demo_'+Math.random().toString(36).slice(2,8);
+  document.getElementById('f-user_id').value=user_id;
+  document.getElementById('f-amount').value=(Math.random()*45000+500).toFixed(2);
+  document.getElementById('f-currency').value='INR';
+  document.getElementById('f-merchant_id').value='merch_'+Math.floor(Math.random()*50);
+  document.getElementById('f-merchant_category').value=cats[Math.floor(Math.random()*cats.length)];
+  document.getElementById('f-device_id').value='dev_'+Math.floor(Math.random()*100);
+  document.getElementById('f-ip_country').value=countries[Math.floor(Math.random()*countries.length)];
+  document.getElementById('f-timestamp').value=new Date().toISOString();
+  document.getElementById('f-channel').value=channels[Math.floor(Math.random()*channels.length)];
+  toast('Demo transaction filled','info');
+}
+
+async function submitScore() {
+  const txn = { txn_id:document.getElementById('f-txn_id').value.trim(), user_id:document.getElementById('f-user_id').value.trim(), amount:parseFloat(document.getElementById('f-amount').value), currency:document.getElementById('f-currency').value.trim().toUpperCase(), merchant_id:document.getElementById('f-merchant_id').value.trim(), merchant_category:document.getElementById('f-merchant_category').value.trim(), timestamp:document.getElementById('f-timestamp').value.trim(), device_id:document.getElementById('f-device_id').value.trim(), ip_country:document.getElementById('f-ip_country').value.trim().toUpperCase(), channel:document.getElementById('f-channel').value };
+  if (!txn.txn_id || !txn.user_id) { toast('txn_id and user_id are required','error'); return; }
+  const btn = document.getElementById('score-btn');
+  btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Scoring...';
+  const area = document.getElementById('score-result-area');
+  area.innerHTML='<div class="empty-state"><span class="spinner"></span><p>Scoring...</p></div>';
+  try {
+    const res = await fetch(API+'/score',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(txn),signal:AbortSignal.timeout(10000)});
+    const data = await res.json();
+    if (!res.ok) { toast('Score error: '+(data.detail||'unknown'),'error'); area.innerHTML=`<div class="empty-state"><p>${data.detail||'Scoring failed'}</p></div>`; return; }
+    renderScoreResult(data);
+    toast(data.is_flagged ? 'Risk Alert: FRAUD detected' : 'Transaction Approved', data.is_flagged ? 'error' : 'success');
+  } catch { toast('Request failed — is the API running?','error'); area.innerHTML='<div class="empty-state"><p>API not reachable</p></div>'; }
+  finally { btn.disabled=false; btn.innerHTML='Score Transaction'; }
+}
+
+function renderScoreResult(data) {
+  const prob=data.fraud_probability, pct=(prob*100).toFixed(1), isFraud=data.is_flagged;
+  const color=prob>0.7?'#ff4d6d':prob>0.4?'#ffaa2e':'#36d98a';
+  const angle=prob*Math.PI, r=70, cx=80, cy=80;
+  const ex=cx+r*Math.cos(Math.PI-angle), ey=cy-r*Math.sin(Math.PI-angle);
+  const gaugeArc=`M ${cx-r} ${cy} A ${r} ${r} 0 ${prob>0.5?1:0} 1 ${ex} ${ey}`;
+  const maxShap=Math.max(...(data.top_shap_features||[]).map(f=>Math.abs(f.shap_value)),0.001);
+  const shapBars=(data.top_shap_features||[]).map(f=>{const pb=(Math.abs(f.shap_value)/maxShap*100).toFixed(1);const pos=f.shap_value>0;return`<div class="shap-bar"><span class="shap-name" title="${f.feature}">${f.feature}</span><div class="shap-track"><div class="shap-fill ${pos?'pos':'neg'}" style="width:${pb}%"></div></div><span class="shap-num">${f.shap_value>0?'+':''}${f.shap_value.toFixed(3)}</span></div>`;}).join('');
+  document.getElementById('score-result-area').innerHTML=`<div class="score-result">
+    <div class="gauge-wrap">
+      <div class="gauge-label">Fraud Probability</div>
+      <svg class="gauge-svg" viewBox="0 0 160 90">
+        <path d="M ${cx-r} ${cy} A ${r} ${r} 0 1 1 ${cx+r} ${cy}" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="12" stroke-linecap="round"/>
+        <path d="${gaugeArc}" fill="none" stroke="${color}" stroke-width="12" stroke-linecap="round" style="filter:drop-shadow(0 0 6px ${color})"/>
+      </svg>
+      <div class="gauge-value" style="color:${color}">${pct}%</div>
+      <div class="gauge-sub ${isFraud?'fraud':'legit'}">${isFraud?'FLAGGED AS HIGH RISK':'APPROVED / LOW RISK'}</div>
+    </div>
+    <div><div class="shap-title">Top SHAP Features</div>${shapBars}</div>
+    <div class="score-meta"><span class="meta-chip">Model: ${data.model_version}</span><span class="meta-chip">Latency: ${data.latency_ms.toFixed(1)}ms</span><span class="meta-chip">ID: ${data.txn_id}</span></div>
+  </div>`;
+}
+
+async function refreshAll() {
+  await Promise.all([checkHealth(), loadStats()]);
+}
+
+refreshAll();
+setInterval(refreshAll, 10000);
+</script>
+</body>
+</html>
