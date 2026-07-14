@@ -120,8 +120,9 @@ This system manages two distinct pipelines—the **Real-Time Online Serving Path
 ## 🚀 Getting Started
 
 ### Prerequisites
-*   Docker & Docker Compose
-*   Make sure ports `8000`, `8501`, `5432`, `6379`, `9092`, `5000`, and `7474` are available.
+*   **Docker & Docker Compose**
+*   **System Resources:** Minimum 8GB RAM allocated to Docker VM (16GB+ RAM and 4+ CPU cores recommended to prevent OOM container exits).
+*   **Port Availability:** Make sure ports `8000`, `8501`, `5432`, `6379`, `9092`, `5000`, and `7474` are available.
 
 ### Running the Pipeline
 
@@ -254,6 +255,9 @@ To achieve both `< 5ms` latency under extreme load and true enterprise-grade rel
     * **Advanced Choice:** Replacing FastAPI's default response class with `ORJSONResponse`.
     * **Why we did it:** Standard JSON serialization is written in Python and consumes valuable CPU cycles. `orjson` is a highly optimized, Rust-based library that significantly speeds up JSON encoding, shaving off crucial microseconds on the hot path.
 ## ⚙️ Performance Observations & Telemetry Insights
+
+> [!NOTE]
+> **Benchmark Hardware Configuration:** All benchmark metrics and screenshots presented below were captured running the complete Docker stack locally on a **MacBook Pro M4 Pro (12-core CPU, 24GB Unified Memory, 512GB SSD)**.
 
 During load testing and active monitoring, several system behaviors demonstrate the effectiveness of our optimizations and statistical guardrails:
 
