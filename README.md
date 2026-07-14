@@ -272,7 +272,7 @@ When running the Locust load test, the live flagged fraud rate frequently spikes
 
 ### 3. Retraining Decision Threshold Constraints (300% Ceiling)
 To optimize model performance, the background training script (`training/train.py`) loops through decision thresholds to maximize the F0.5 score. To prevent the model from over-flagging under normal operations or completely freezing during mild noise, the script imposes a strict optimization constraint:
-$$\text{fraud\_rate} \times 0.5 \le \text{predicted\_flag\_rate} \le \text{fraud\_rate} \times 3.0$$
+$$\text{fraud-rate} \times 0.5 \le \text{predicted-flag-rate} \le \text{fraud-rate} \times 3.0$$
 Since our simulator's base `fraud_rate` is set to **5%**, the model is mathematically allowed to shift its decision boundary down until it flags up to **15%** of transactions. A flag rate of 13% during an attack simulation represents the classifier choosing a highly sensitive decision boundary to capture maximum fraud.
 
 ## 📂 Project Structure
