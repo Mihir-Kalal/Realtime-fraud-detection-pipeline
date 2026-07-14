@@ -132,6 +132,7 @@ This system manages two distinct pipelines—the **Real-Time Online Serving Path
    ```
 
 2. **Access the UIs:**
+   * **HTML Telemetry & Control Center:** Open `frontend/dashboard_ui.html` directly in your web browser.
    * **Streamlit Monitoring Dashboard:** [http://localhost:8501](http://localhost:8501)
    * **MLflow Model Registry:** [http://localhost:5000](http://localhost:5000)
    * **Neo4j Browser:** [http://localhost:7474](http://localhost:7474) (Default auth: `neo4j` / `fraudpass`)
