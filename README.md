@@ -258,7 +258,11 @@ During load testing and active monitoring, several system behaviors demonstrate 
 
 ### 1. Latency Dynamics (Low Load vs. High Load)
 * **Low Load (~7.0ms Average Latency):** When testing with the sequential `live_simulator.py` script, transactions arrive one-by-one. Since there are no concurrent transactions to batch, the FastAPI API scores them individually, incurring minor serialization overhead.
-* **High Load (~3.9ms Average Latency):** Under high-throughput testing (via Locust), the API's **Dynamic Micro-Batching** triggers. It groups incoming parallel transactions into batches of up to 50, executing SIMD hardware vectorization inside the C++ ONNX engine. This amortizes event-loop overhead and drops average latency to **3.9ms** while processing >3,100 predictions/sec.
+* **High Load (~3.9ms Average Latency):** Under high-throughput testing (via Locust), the API's **Dynamic Micro-Batching** triggers. It groups incoming parallel transactions into batches of up to 50, executing SIMD hardware vectorization inside the C++ ONNX engine. This amortizes event-loop overhead and drops average latency to **3.6ms - 3.9ms** while processing >3,100 predictions/sec.
+
+Below is a live snapshot of the control center during a high-throughput load test. Note the **361,000+ predictions** processed at a **3.6ms average latency** and the MAB router successfully shifting **100% of traffic** to Model 8:
+
+![High Load Performance Dashboard](assets/dashboard_high_load.png)
 
 ### 2. Fraud Flag Rate Escalation During Load Tests (13%+)
 When running the Locust load test, the live flagged fraud rate frequently spikes to **13% or more**. This is a **designed validation feature** of our feature engineering sensitivity:
