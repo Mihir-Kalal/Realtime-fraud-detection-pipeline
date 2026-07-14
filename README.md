@@ -265,3 +265,27 @@ To achieve both `< 5ms` latency under extreme load and true enterprise-grade rel
 * 🌊 `/flink_streaming` - Flink jobs for heavy stream aggregations.
 * 🧪 `/tests` - Unit, integration, and Locust load testing scripts.
 * 🌐 `/frontend` - Static UI files.
+
+## 📊 Telemetry & Control Center Dashboard
+
+The pipeline includes a fully interactive monitoring control center (`frontend/dashboard_ui.html`) to visualize real-time scoring telemetry, A/B performance, model registry logs, predictions feeds, and data drift:
+
+### 1. System Overview & Performance Metrics
+Tracks real-time predictions, flag rates, average system latency (with p95/p99 SLA breakdowns), model traffic splits, and historical A/B performance metrics.
+![Pipeline Overview](assets/dashboard_overview.png)
+
+### 2. Live Model Registry & Candidate Pool
+Displays currently active models hot-loaded in the serving API and details version history from the MLflow registry.
+![Model Registry](assets/dashboard_models.png)
+
+### 3. Real-Time Predictions Feed
+Provides a live feed of processed transactions showing individual fraud probabilities, execution latencies, and flag status.
+![Live Predictions Feed](assets/dashboard_feed.png)
+
+### 4. Continuous Drift Monitor
+Monitors real-time Population Stability Index (PSI) values and captures automated retraining triggers when data drift is detected.
+![Drift Monitor](assets/dashboard_drift.png)
+
+### 5. Manual Scoring Sandbox
+Enables playground testing of individual transaction fields scored directly against the FastAPI API.
+![Score a Transaction](assets/dashboard_score.png)
