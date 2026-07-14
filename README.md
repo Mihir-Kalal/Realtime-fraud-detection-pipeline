@@ -58,28 +58,28 @@ graph LR
     end
 
     %% Connections
-    Kafka -->|Consume events| Flink
-    Flink -->|1. O(1) reads/writes| Redis
-    Flink -->|2. Graph traversals| Neo4j
-    Flink -->|3. Append snapshot| Postgres
+    Kafka -->|"Consume events"| Flink
+    Flink -->|"1. O(1) reads/writes"| Redis
+    Flink -->|"2. Graph traversals"| Neo4j
+    Flink -->|"3. Append snapshot"| Postgres
 
-    Client -->|HTTP POST txn| API
-    API <-->|Fetch hot features| Redis
-    API <-->|Check fast-pass| Cache
-    API -->|Route traffic| MAB
-    MAB -->|Score| ONNX
-    API -->|Log prediction| Postgres
-    API -->|Explain prediction| SHAP
-    SHAP -->|Save SHAP values| Postgres
+    Client -->|"HTTP POST txn"| API
+    API <-->|"Fetch hot features"| Redis
+    API <-->|"Check fast-pass"| Cache
+    API -->|"Route traffic"| MAB
+    MAB -->|"Score"| ONNX
+    API -->|"Log prediction"| Postgres
+    API -->|"Explain prediction"| SHAP
+    SHAP -->|"Save SHAP values"| Postgres
 
-    Feedback -->|Write true labels| Postgres
-    API -->|Live inference data| Monitoring
-    Postgres -->|Baseline data| Monitoring
-    Monitoring -->|Trigger retraining| Training
-    Training -->|Read training data| Postgres
-    Training -->|Register new models| MLflow
-    MLflow -.->|Poll & reload top 2| API
-    Monitoring -->|Publish metrics| Dashboard
+    Feedback -->|"Write true labels"| Postgres
+    API -->|"Live inference data"| Monitoring
+    Postgres -->|"Baseline data"| Monitoring
+    Monitoring -->|"Trigger retraining"| Training
+    Training -->|"Read training data"| Postgres
+    Training -->|"Register new models"| MLflow
+    MLflow -.->|"Poll & reload top 2"| API
+    Monitoring -->|"Publish metrics"| Dashboard
 
     %% Assign Classes
     class Client,Dashboard client;
