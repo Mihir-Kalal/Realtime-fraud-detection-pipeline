@@ -17,62 +17,69 @@ This system acts as a complete MLOps ecosystem capable of ingesting streaming tr
 ```mermaid
 graph LR
     %% Colors & Styling
-    classDef client fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
-    classDef stream fill:#1e293b,stroke:#f59e0b,stroke-width:2px,color:#f8fafc;
-    classDef compute fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#f8fafc;
-    classDef db fill:#1e293b,stroke:#8b5cf6,stroke-width:2px,color:#f8fafc;
-    classDef model fill:#1e293b,stroke:#ec4899,stroke-width:2px,color:#f8fafc;
+    classDef client fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef stream fill:#0f172a,stroke:#fb923c,stroke-width:2px,color:#f8fafc;
+    classDef compute fill:#0f172a,stroke:#34d399,stroke-width:2px,color:#f8fafc;
+    classDef db fill:#0f172a,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
+    classDef model fill:#0f172a,stroke:#f472b6,stroke-width:2px,color:#f8fafc;
 
-    subgraph Ingestion ["1. Streaming & Feature Engineering"]
-        Producer(Data Producer)
-        Kafka(Apache Kafka)
-        Flink(Feature Engine)
-        Producer -->|Streams| Kafka
-        Kafka -->|Consumes| Flink
+    subgraph Ingestion ["1. Data Ingestion"]
+        Producer[Synthetic Transaction Producer]
+        Kafka[Apache Kafka Broker<br/>Topic: transactions:raw]
+        Producer -->|Publish stream| Kafka
     end
 
-    subgraph Storage ["2. Storage & Feature Store"]
-        Redis[(Redis Feature Store)]
-        Neo4j[(Neo4j Graph DB)]
-        Postgres[(PostgreSQL)]
-        Flink -->|Hot Features| Redis
-        Flink -->|Graph Traversals| Neo4j
-        Flink -->|Cold Storage| Postgres
+    subgraph FeatureEng ["2. Stream Processing"]
+        Flink[Apache Flink / PyFlink<br/>& Feature Engine Service]
+        Flink -->|Calculate velocity & window metrics| Flink
     end
 
-    subgraph Serving ["3. Serving API"]
-        Client([User Transactions])
-        API(FastAPI Serving API)
-        Cache[TTLCache]
-        MAB{MAB Router}
-        ONNX(ONNX Runtime)
-        SHAP(SHAP Explainer)
-
-        Client -->|HTTP POST| API
-        API <-->|Fetch Features| Redis
-        API <-->|In-Process Cache| Cache
-        API -->|Thompson Sampling| MAB
-        MAB -->|Micro-Batch| ONNX
-        API -->|Async Log| Postgres
-        API -->|Explainability| SHAP
-        SHAP -->|Save Explanations| Postgres
+    subgraph DatabaseLayer ["3. Feature Store & Storage"]
+        Redis[(Redis Cache<br/>Hot online feature store)]
+        Neo4j[(Neo4j Graph DB<br/>Entity relationships)]
+        Postgres[(PostgreSQL DB<br/>System of record & training logs)]
     end
 
-    subgraph MLOps ["4. Automated MLOps & Monitoring"]
-        Feedback(Feedback Loop)
-        Monitoring(Drift Monitor)
-        Training(Auto Retraining)
-        MLflow(MLflow Registry)
-        Dashboard[Streamlit Dashboard]
-
-        Feedback -->|Writes Labels| Postgres
-        API -->|Live Logs| Monitoring
-        Postgres -->|Baseline| Monitoring
-        Monitoring -->|Triggers| Training
-        Monitoring -->|Metrics| Dashboard
-        Training -->|Logs Models| MLflow
-        MLflow -.->|Hot-swaps Models| API
+    subgraph ScoringAPI ["4. Low-Latency Serving API"]
+        Client([Client Applications])
+        API[FastAPI Serving API<br/>with Gunicorn]
+        Cache[Local TTLCache<br/>Fast-pass cache]
+        MAB{MAB Router<br/>Thompson Sampling}
+        ONNX[ONNX Runtime<br/>In-process model scoring]
+        SHAP[SHAP Explainer<br/>Async explanations]
     end
+
+    subgraph ContinuousMLOps ["5. Automated MLOps & Monitoring"]
+        Feedback[Feedback Loop<br/>Simulates chargebacks]
+        Monitoring[Drift Monitor<br/>Drift PSI checks]
+        Training[Auto-Retraining Service<br/>Background retraining]
+        MLflow[(MLflow Registry<br/>Model artifact store)]
+        Dashboard[Streamlit Dashboard<br/>Real-time metrics]
+    end
+
+    %% Connections
+    Kafka -->|Consume events| Flink
+    Flink -->|1. O(1) reads/writes| Redis
+    Flink -->|2. Graph traversals| Neo4j
+    Flink -->|3. Append snapshot| Postgres
+
+    Client -->|HTTP POST txn| API
+    API <-->|Fetch hot features| Redis
+    API <-->|Check fast-pass| Cache
+    API -->|Route traffic| MAB
+    MAB -->|Score| ONNX
+    API -->|Log prediction| Postgres
+    API -->|Explain prediction| SHAP
+    SHAP -->|Save SHAP values| Postgres
+
+    Feedback -->|Write true labels| Postgres
+    API -->|Live inference data| Monitoring
+    Postgres -->|Baseline data| Monitoring
+    Monitoring -->|Trigger retraining| Training
+    Training -->|Read training data| Postgres
+    Training -->|Register new models| MLflow
+    MLflow -.->|Poll & reload top 2| API
+    Monitoring -->|Publish metrics| Dashboard
 
     %% Assign Classes
     class Client,Dashboard client;
