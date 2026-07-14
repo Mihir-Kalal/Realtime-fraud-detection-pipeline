@@ -289,3 +289,27 @@ Monitors real-time Population Stability Index (PSI) values and captures automate
 ### 5. Manual Scoring Sandbox
 Enables playground testing of individual transaction fields scored directly against the FastAPI API.
 ![Score a Transaction](assets/dashboard_score.png)
+
+### 6. Pipeline Services Status
+A diagnostic dashboard showing the health, connection status, and API details of all microservices (FastAPI, MLflow, Streamlit, PostgreSQL, Redis, and Flink).
+![Pipeline Services](assets/dashboard_services.png)
+
+## 📈 Streamlit Monitoring & Load Testing Dashboard
+
+The project also runs a dedicated **Streamlit Telemetry Dashboard** (accessible locally at `http://localhost:8501`) that displays system metrics, SLA graphs, and includes interactive load testing controls:
+
+### 1. Manual Load Testing Controls (Locust Integration)
+Trigger and configure simulated load tests (number of concurrent users and spawn rates) directly from the Streamlit UI using an embedded **Locust** interface.
+![Locust Load Testing](assets/streamlit_load_testing.png)
+
+### 2. Model Traffic Split & Distribution
+Displays a real-time pie chart detailing how Thompson Sampling is currently routing transaction traffic between active model versions.
+![Model Traffic Split](assets/streamlit_traffic_split.png)
+
+### 3. Latency SLA Compliance
+Tracks execution latency per transaction in real-time, matching it against a strict 100ms red SLA line (which routinely scores sub-10ms).
+![Latency SLA Compliance](assets/streamlit_latency_sla.png)
+
+### 4. Drift Tracking & Retraining Metrics
+Plots live fraud rates, tracks Population Stability Index (PSI) feature drift history, and monitors background model retrain completions.
+![Drift Tracking & Retraining](assets/streamlit_drift_checks.png)
