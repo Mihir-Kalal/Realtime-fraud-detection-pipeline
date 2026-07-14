@@ -89,9 +89,17 @@ The pipeline is fully containerized via Docker Compose and microservice-oriented
    * **MLflow Model Registry:** [http://localhost:5000](http://localhost:5000)
    * **Neo4j Browser:** [http://localhost:7474](http://localhost:7474) (Default auth: `neo4j` / `fraudpass`)
 
-3. **Interact with the API:**
-   The Serving API is available at `http://localhost:8000`. You can simulate a high-load scenario using the provided load tests:
+3. **Interact with the API / Simulate Transactions:**
+   The Serving API is available at `http://localhost:8000`. You can run the live simulator script to automatically generate and score transaction traffic:
    ```bash
+   PYTHONPATH=. venv/bin/python tests/live_simulator.py
+   ```
+
+   Here is a preview of the transaction generator simulator outputting and scoring live transaction streams:
+   
+   ![Transaction Generation Simulator](assets/simulator_screenshot.png)
+
+   You can also run a high-load scenario using the provided load tests:
    ```bash
    cd tests/load
    ./run_load_test.sh

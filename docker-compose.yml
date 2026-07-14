@@ -222,7 +222,7 @@ services:
       - "8089:8089"
     volumes:
       - ./tests/load:/mnt/locust
-    command: -f /mnt/locust/locustfile.py --host http://serving:8000
+    command: -f /mnt/locust/locustfile.py --host http://serving:8000 --processes 4
     depends_on:
       - serving
 
