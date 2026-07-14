@@ -23,38 +23,45 @@ graph TD
     classDef client fill:#fbb,stroke:#333,stroke-width:2px;
     classDef model fill:#ff9,stroke:#333,stroke-width:2px;
 
-    Client([User Transactions]) ::: client -->|HTTP POST| API(FastAPI Serving API) ::: compute
+    Client([User Transactions]) -->|HTTP POST| API(FastAPI Serving API)
     
     %% Ingestion Flow
-    Producer(Data Producer) ::: compute -->|Streams| Kafka(Apache Kafka) ::: stream
-    Kafka -->|Consumes| Flink(Feature Engine) ::: compute
+    Producer(Data Producer) -->|Streams| Kafka(Apache Kafka)
+    Kafka -->|Consumes| Flink(Feature Engine)
     
     %% Feature Engine Storage
-    Flink -->|Graph Traversals| Neo4j[(Neo4j Graph DB)] ::: db
-    Flink -->|Cold Storage / Logs| Postgres[(PostgreSQL)] ::: db
-    Flink -->|Hot Features| Redis[(Redis Feature Store)] ::: db
+    Flink -->|Graph Traversals| Neo4j[(Neo4j Graph DB)]
+    Flink -->|Cold Storage / Logs| Postgres[(PostgreSQL)]
+    Flink -->|Hot Features| Redis[(Redis Feature Store)]
     
     %% Serving Flow
-    API -.->|1. In-Process Cache| Cache[TTLCache] ::: compute
+    API -.->|1. In-Process Cache| Cache[TTLCache]
     API -->|2. Fetch Features < 1ms| Redis
     Redis -.->|Circuit Breaker Fallback| API
-    API -->|3. Thompson Sampling| MAB{Top 2 Models} ::: compute
-    MAB -->|4. Micro-Batch Inference| ONNX(ONNX Runtime) ::: model
+    API -->|3. Thompson Sampling| MAB{Top 2 Models}
+    MAB -->|4. Micro-Batch Inference| ONNX(ONNX Runtime)
     API -->|5. Async Logging| Postgres
-    API -->|6. Async Explainability| SHAP(SHAP Explainer) ::: compute
+    API -->|6. Async Explainability| SHAP(SHAP Explainer)
     SHAP -->|Logs Explanations| Postgres
     
     %% MLOps Flow
-    Feedback(Delayed Feedback Loop) ::: compute -->|Writes True Labels| Postgres
-    Postgres -.->|Training Data| Training(Automated Training) ::: compute
-    Training -->|Logs Artifacts| MLflow(MLflow Registry) ::: db
+    Feedback(Delayed Feedback Loop) -->|Writes True Labels| Postgres
+    Postgres -.->|Training Data| Training(Automated Training)
+    Training -->|Logs Artifacts| MLflow(MLflow Registry)
     MLflow -.->|Hot-swaps Top 2| API
     
     %% Monitoring
-    API -->|Live Inference Data| Monitoring(Drift Monitor) ::: compute
+    API -->|Live Inference Data| Monitoring(Drift Monitor)
     Postgres -->|Baseline Data| Monitoring
     Monitoring -->|Triggers Retraining| Training
-    Monitoring -->|Metrics| Dashboard[Streamlit Dashboard] ::: client
+    Monitoring -->|Metrics| Dashboard[Streamlit Dashboard]
+
+    %% Assign Classes
+    class Client,Dashboard client;
+    class Kafka stream;
+    class Neo4j,Postgres,Redis,MLflow db;
+    class API,Producer,Flink,Cache,MAB,SHAP,Feedback,Training,Monitoring compute;
+    class ONNX model;
 ```
 
 The pipeline is fully containerized via Docker Compose and microservice-oriented:
