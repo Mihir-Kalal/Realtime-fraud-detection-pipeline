@@ -17,11 +17,11 @@ This system acts as a complete MLOps ecosystem capable of ingesting streaming tr
 ```mermaid
 graph LR
     %% Colors & Styling
-    classDef client fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
-    classDef stream fill:#0f172a,stroke:#fb923c,stroke-width:2px,color:#f8fafc;
-    classDef compute fill:#0f172a,stroke:#34d399,stroke-width:2px,color:#f8fafc;
-    classDef db fill:#0f172a,stroke:#818cf8,stroke-width:2px,color:#f8fafc;
-    classDef model fill:#0f172a,stroke:#f472b6,stroke-width:2px,color:#f8fafc;
+    classDef client fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f8fafc;
+    classDef stream fill:#1e293b,stroke:#f59e0b,stroke-width:2px,color:#f8fafc;
+    classDef compute fill:#1e293b,stroke:#10b981,stroke-width:2px,color:#f8fafc;
+    classDef db fill:#1e293b,stroke:#8b5cf6,stroke-width:2px,color:#f8fafc;
+    classDef model fill:#1e293b,stroke:#ec4899,stroke-width:2px,color:#f8fafc;
 
     subgraph Ingestion ["1. Data Ingestion"]
         Producer[Synthetic Transaction Producer]
@@ -89,18 +89,33 @@ graph LR
     class ONNX model;
 ```
 
-The pipeline is fully containerized via Docker Compose and microservice-oriented:
+### 🔄 End-to-End Data Flow & Architecture Detail
 
-* 📥 **Data Ingestion (Kafka):** Simulates a high-throughput stream of synthetic transactions and acts as an event-driven buffer.
-* ⚙️ **Streaming Feature Engine (Flink/Python):** Consumes raw transactions, computes real-time sliding-window aggregations, and extracts multi-hop features from **Neo4j**.
-* 🗄️ **Dual-Layer Feature Store:** 
-  * **Redis:** Ultra-low latency hot cache for real-time inference (`O(1)` lookups).
-  * **Postgres:** Historical system of record for transaction logs, delayed labels, and offline training data.
-* 🧠 **Serving API (FastAPI + Gunicorn):** A heavily optimized, asynchronous scoring API executing **ONNX** models. Features in-process caching, dynamic micro-batching, and Redis Circuit Breakers.
-* 🧪 **Automated MLOps (MLflow):** 
-  * **Multi-Armed Bandit:** Dynamically routes live traffic between the Top 2 historical models using Bayesian Thompson Sampling.
-  * **Drift Detection:** Continuously calculates Population Stability Index (PSI) to autonomously trigger background retraining when data distribution shifts.
-* 📊 **Live Dashboard (Streamlit):** Web UI for real-time visualization of transaction volumes, fraud rates, and model drift metrics.
+This system manages two distinct pipelines—the **Real-Time Online Serving Path** and the **Offline Feedback/MLOps Loop**:
+
+#### 1. Ingestion & Feature Engineering Flow (The Online Streaming Path)
+1. **Event Generation:** The **Synthetic Transaction Producer** generates mock credit card transactions continuously, sending them to the **Apache Kafka** `transactions:raw` topic.
+2. **Streaming Engine:** The **Apache Flink** job (or `feature_engine` consumer) reads raw transaction streams in real-time.
+3. **Feature Computation:** 
+   * It calculates rolling window velocity metrics (e.g., transaction count/volume in the last 1h and 24h) in state memory.
+   * It queries **Neo4j Graph DB** on the fly using Cypher to retrieve graph-based network features (e.g., hop distance to known fraudsters, device/IP sharing counts).
+4. **Online Store Sink:** The final computed feature vector is written directly to the **Redis Cache** (Online Feature Store) with a short TTL, enabling ultra-fast `O(1)` retrieval.
+5. **Cold Storage Sync:** Simultaneously, a raw copy of the transaction and feature snapshot is appended to the **PostgreSQL DB** for historical record keeping and offline model training.
+
+#### 2. Real-Time Inference Flow (The Serving Path)
+1. **Request:** A client submits a transaction scoring payload via HTTP POST to the **FastAPI Serving API**.
+2. **Feature Hydration:** The API checks its local **TTLCache** for a hit; if missed, it issues an extremely low-latency read to **Redis** to retrieve the pre-computed feature vector.
+3. **Model Selection:** The API passes the request details to the **Multi-Armed Bandit (MAB) Router**, which uses Bayesian Thompson Sampling to dynamically allocate traffic between the Top 2 models stored in memory.
+4. **ONNX Scoring:** The transaction is scored in-process using **ONNX Runtime** (allowing fast micro-batched inference) to output a fraud probability.
+5. **Async Logs & Explainability:** 
+   * The serving API logs the prediction result back to PostgreSQL asynchronously to minimize request-blocking.
+   * A background worker triggers the **SHAP Explainer** to calculate feature importance values, which are saved to PostgreSQL.
+
+#### 3. Continuous Optimization Flow (The MLOps Loop)
+1. **True Labels:** The **Feedback Loop service** simulates real-world credit card chargebacks (delayed true labels) and writes them to PostgreSQL.
+2. **Drift Monitoring:** The **Drift Monitor** wakes up periodically to run Population Stability Index (PSI) algorithms comparing the distributions of live incoming transaction data against the historical baseline in PostgreSQL.
+3. **Background Training:** Upon detecting data drift (PSI > threshold), the Drift Monitor fires an API call to trigger the **Auto-Retraining Service**.
+4. **Model Promotion:** The retraining service pulls labeled historical data from PostgreSQL, trains a new model, registers it in the **MLflow Registry**, and MLflow hot-swaps the top 2 models in the Serving API without downtime.
 
 ## 🚀 Getting Started
 
