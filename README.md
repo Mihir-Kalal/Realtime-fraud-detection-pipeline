@@ -257,7 +257,7 @@ To achieve both `< 5ms` latency under extreme load and true enterprise-grade rel
 ## ⚙️ Performance Observations & Telemetry Insights
 
 > [!NOTE]
-> **Benchmark Hardware Configuration:** All benchmark metrics and screenshots presented below were captured running the complete Docker stack locally on a **MacBook Pro M4 Pro (12-core CPU, 24GB Unified Memory, 512GB SSD)**.
+> **Benchmark Hardware Configuration:** All benchmark metrics and screenshots presented below were captured running the complete Docker stack locally on a **MacBook Pro M4 Pro (12-core CPU, 16-core GPU, 24GB Unified Memory, 512GB SSD)**.
 
 During load testing and active monitoring, several system behaviors demonstrate the effectiveness of our optimizations and statistical guardrails:
 
