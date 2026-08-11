@@ -154,6 +154,14 @@ This system manages two distinct pipelines—the **Real-Time Online Serving Path
    ./run_load_test.sh
    ```
 
+   **Test Fault Tolerance (DLQ):**
+   To verify the pipeline's resilience against malformed data, inject schema validation failures (poison pills) directly into the Kafka stream:
+   ```bash
+   docker exec -i fraud-producer python - < tests/dlq_stress_test.py
+   # Verify the Redis DLQ caught all injected failures without stalling the partition:
+   docker exec -it fraud-redis redis-cli LLEN dlq:feature_engine
+   ```
+
 ## 🧠 Feature Engineering (Fraud Signals)
 
 The Machine Learning model scores transactions based on highly complex, real-time streaming aggregations and graph traversals. The `feature_engine` dynamically extracts the following fraud signals on the fly:
@@ -202,6 +210,11 @@ To achieve both `< 5ms` latency under extreme load and true enterprise-grade rel
    * **Basic Choice:** Allowing the API to crash if the Redis cache becomes unresponsive.
    * **Advanced Choice:** Wrapping Redis calls in a Circuit Breaker that gracefully falls back to a "cold-start" (all-zeros feature vector).
    * **Why we did it:** High availability is better than perfect accuracy. It is better to score a transaction using a default vector than to fail the HTTP request entirely during a temporary Redis outage.
+
+7. **Dead Letter Queue (DLQ) Architecture**
+   * **Basic Choice:** Allowing consumer partitions to crash or endlessly retry when malformed JSON hits the Kafka topic.
+   * **Advanced Choice:** Routing Pydantic schema validation failures from the Kafka stream directly into a Redis-backed DLQ.
+   * **Why we did it:** A single malformed message (poison pill) can stall an entire Kafka partition. By catching `ValidationErrors` and pushing the raw payloads to a Redis list, operators can granularly inspect and replay failures without interrupting the >3,100 req/sec scoring path.
 
 ### Phase 3: Advanced MLOps Patterns
 7. **Asynchronous Explainability (SHAP)**
