@@ -155,10 +155,10 @@ This system manages two distinct pipelines—the **Real-Time Online Serving Path
    ```
 
    **Test Fault Tolerance (DLQ):**
-   To verify the pipeline's resilience against malformed data, inject schema validation failures (poison pills) directly into the Kafka stream:
+   To verify the pipeline's resilience against malformed data, you can inject 14 distinct schema validation failures (missing fields, wrong data types, enum violations, boundary violations) directly into the Kafka stream to trigger the DLQ:
    ```bash
    docker exec -i fraud-producer python - < tests/dlq_stress_test.py
-   # Verify the Redis DLQ caught all injected failures without stalling the partition:
+   # Verify the Redis DLQ caught all 14 distinct failures without stalling the partition:
    docker exec -it fraud-redis redis-cli LLEN dlq:feature_engine
    ```
 
