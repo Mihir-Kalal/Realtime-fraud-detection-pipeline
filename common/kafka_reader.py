@@ -24,7 +24,9 @@ KAFKA_TOPIC = "transactions-raw"
 class StreamMessage:
     """A single delivered Kafka message, mapped to the StreamMessage contract."""
     message_id: str
-    transaction: Transaction
+    transaction: Transaction | None
+    raw_payload: dict | None = None
+    validation_error: Exception | None = None
 
 
 def deserialize_message(x: bytes) -> dict:
@@ -97,16 +99,25 @@ class TransactionKafkaReader:
                         messages.append(
                             StreamMessage(
                                 message_id=f"{rec.partition}:{rec.offset}",
-                                transaction=txn
+                                transaction=txn,
+                                raw_payload=data_payload
                             )
                         )
                     except Exception as exc:
                         logger.error(
                             "Failed to deserialize Kafka message at partition=%d, offset=%d: %s. "
-                            "Skipping to prevent poison pill from blocking partition.",
+                            "Forwarding to DLQ processor.",
                             rec.partition,
                             rec.offset,
                             exc,
+                        )
+                        messages.append(
+                            StreamMessage(
+                                message_id=f"{rec.partition}:{rec.offset}",
+                                transaction=None,
+                                raw_payload=val.get("data") if isinstance(val, dict) else val,
+                                validation_error=exc
+                            )
                         )
         except Exception as exc:
             logger.error("Error polling messages from Kafka: %s", exc)

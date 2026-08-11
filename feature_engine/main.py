@@ -484,6 +484,11 @@ def main():
             if not batch:
                 continue
             for msg in batch:
+                if msg.validation_error:
+                    logger.error("Pydantic validation failed for offset=%s", msg.message_id)
+                    r.lpush("dlq:feature_engine", json.dumps(msg.raw_payload) if isinstance(msg.raw_payload, dict) else str(msg.raw_payload))
+                    reader.ack(msg.message_id)
+                    continue
                 try:
                     fv = computer.compute_and_store(msg.transaction)
                     pg_writer.enqueue(fv.as_postgres_row(), msg.transaction)
