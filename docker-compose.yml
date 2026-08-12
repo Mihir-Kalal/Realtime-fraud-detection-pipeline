@@ -87,7 +87,7 @@ services:
     container_name: fraud-producer
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
-      EVENTS_PER_SECOND: 5
+      EVENTS_PER_SECOND: 200
       FRAUD_RATE: 0.05
       NUM_SYNTHETIC_USERS: 200
     depends_on:
@@ -206,7 +206,7 @@ services:
     environment:
       POSTGRES_DSN: postgresql://frauduser:fraudpass@postgres:5432/frauddb
       MLFLOW_TRACKING_URI: http://mlflow:5000
-      MIN_LABELED_ROWS: "200"
+      MIN_LABELED_ROWS: "1000"
     volumes:
       - mlflow_artifacts:/mlruns
     depends_on:

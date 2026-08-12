@@ -95,10 +95,13 @@ class Config:
         )
     )
     min_labeled_rows: int = field(
-        default_factory=lambda: int(os.environ.get("MIN_LABELED_ROWS", "200"))
+        default_factory=lambda: int(os.environ.get("MIN_LABELED_ROWS", "1000"))
     )
     test_size: float = field(
-        default_factory=lambda: float(os.environ.get("TEST_SIZE", "0.2"))
+        default_factory=lambda: float(os.environ.get("TEST_SIZE", "0.1"))
+    )
+    val_size: float = field(
+        default_factory=lambda: float(os.environ.get("VAL_SIZE", "0.2"))
     )
     random_seed: int = field(
         default_factory=lambda: int(os.environ.get("RANDOM_SEED", "42"))
@@ -215,12 +218,23 @@ def train_model(
     X_renamed = X.copy()
     X_renamed.columns = [f"f{i}" for i in range(len(FEATURE_COLUMNS))]
 
-    X_train, X_test, y_train, y_test = train_test_split(
+    # Double split: 1. Hold out test set, 2. Split remainder into train/val
+    X_temp, X_test, y_temp, y_test = train_test_split(
         X_renamed,
         y,
         test_size=cfg.test_size,
         random_state=cfg.random_seed,
         stratify=y,
+    )
+    
+    # Calculate relative validation size for the remaining data
+    relative_val_size = cfg.val_size / (1.0 - cfg.test_size)
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_temp,
+        y_temp,
+        test_size=relative_val_size,
+        random_state=cfg.random_seed,
+        stratify=y_temp,
     )
 
     n_pos = int(y_train.sum())
@@ -241,6 +255,7 @@ def train_model(
     }
 
     dtrain = xgb.DMatrix(X_train, label=y_train)
+    dval = xgb.DMatrix(X_val, label=y_val)
     dtest = xgb.DMatrix(X_test, label=y_test)
 
     evals_result: dict[str, Any] = {}
@@ -248,49 +263,57 @@ def train_model(
         params,
         dtrain,
         num_boost_round=cfg.xgb_num_boost_round,
-        evals=[(dtrain, "train"), (dtest, "test")],
+        evals=[(dtrain, "train"), (dval, "val")],
         early_stopping_rounds=cfg.xgb_early_stopping_rounds,
         evals_result=evals_result,
         verbose_eval=False,
     )
 
     best_iteration = booster.best_iteration
-    y_pred_proba = booster.predict(
-        dtest, iteration_range=(0, best_iteration + 1)
+    
+    # 1. TUNING PHASE: Find best threshold using Validation Set
+    y_val_pred_proba = booster.predict(
+        dval, iteration_range=(0, best_iteration + 1)
     )
-    y_pred_label = (y_pred_proba >= 0.5).astype(int)
-
+    
     best_thresh = 0.5
     best_f05 = 0.0
     best_f1_at_thresh = 0.0
     for thresh in np.linspace(0.01, 0.99, 99):
-        y_pred = (y_pred_proba >= thresh).astype(int)
+        y_val_pred = (y_val_pred_proba >= thresh).astype(int)
         
-        pred_flag_rate = y_pred.mean()
+        pred_flag_rate = y_val_pred.mean()
         # Constrain the threshold so the flag rate is realistic (between 50% and 300% of base fraud rate)
         if pred_flag_rate > fraud_rate * 3.0 or pred_flag_rate < fraud_rate * 0.5:
             continue
             
-        f05 = fbeta_score(y_test, y_pred, beta=0.5, zero_division=0)
-        f1 = f1_score(y_test, y_pred, zero_division=0)
+        f05 = fbeta_score(y_val, y_val_pred, beta=0.5, zero_division=0)
+        f1 = f1_score(y_val, y_val_pred, zero_division=0)
         if f05 > best_f05:
             best_f05 = f05
             best_f1_at_thresh = f1
             best_thresh = thresh
 
+    # 2. EVALUATION PHASE: Calculate final metrics on strictly held-out Test Set
+    y_test_pred_proba = booster.predict(
+        dtest, iteration_range=(0, best_iteration + 1)
+    )
+    y_test_pred_label = (y_test_pred_proba >= 0.5).astype(int)
+
     metrics = {
-        "auc": float(roc_auc_score(y_test, y_pred_proba)),
-        "pr_auc": float(average_precision_score(y_test, y_pred_proba)),
-        "log_loss": float(log_loss(y_test, y_pred_proba, labels=[0, 1])),
+        "auc": float(roc_auc_score(y_test, y_test_pred_proba)),
+        "pr_auc": float(average_precision_score(y_test, y_test_pred_proba)),
+        "log_loss": float(log_loss(y_test, y_test_pred_proba, labels=[0, 1])),
         "precision_at_0.5": float(
-            precision_score(y_test, y_pred_label, zero_division=0)
+            precision_score(y_test, y_test_pred_label, zero_division=0)
         ),
-        "recall_at_0.5": float(recall_score(y_test, y_pred_label, zero_division=0)),
-        "f1_at_0.5": float(f1_score(y_test, y_pred_label, zero_division=0)),
+        "recall_at_0.5": float(recall_score(y_test, y_test_pred_label, zero_division=0)),
+        "f1_at_0.5": float(f1_score(y_test, y_test_pred_label, zero_division=0)),
         "best_threshold": float(best_thresh),
         "f1_at_best_threshold": float(best_f1_at_thresh),
         "best_iteration": float(best_iteration),
         "train_rows": float(len(X_train)),
+        "val_rows": float(len(X_val)),
         "test_rows": float(len(X_test)),
         "fraud_rate": float(fraud_rate),
     }
@@ -300,6 +323,7 @@ def train_model(
         "num_boost_round": cfg.xgb_num_boost_round,
         "early_stopping_rounds": cfg.xgb_early_stopping_rounds,
         "test_size": cfg.test_size,
+        "val_size": cfg.val_size,
         "random_seed": cfg.random_seed,
         "n_features": len(FEATURE_COLUMNS),
         "feature_columns": ",".join(FEATURE_COLUMNS),

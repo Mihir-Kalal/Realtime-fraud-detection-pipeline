@@ -120,13 +120,19 @@ CREATE TABLE IF NOT EXISTS feature_snapshots (
     seconds_since_last_txn  DOUBLE PRECISION NOT NULL,
     shared_device_count     INTEGER NOT NULL DEFAULT 0,
     shared_merchant_fraud_count INTEGER NOT NULL DEFAULT 0,
-    hop_distance_to_fraud   INTEGER NOT NULL DEFAULT 0
+    hop_distance_to_fraud   INTEGER NOT NULL DEFAULT 0,
+    is_foreign_ip           DOUBLE PRECISION NOT NULL DEFAULT 0,
+    log_amount              DOUBLE PRECISION NOT NULL DEFAULT 0,
+    is_card_not_present     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    is_high_risk_category   DOUBLE PRECISION NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_feature_snapshots_user_id
     ON feature_snapshots (user_id);
 CREATE INDEX IF NOT EXISTS idx_feature_snapshots_txn_timestamp
     ON feature_snapshots (txn_timestamp);
 """
+
+HIGH_RISK_CATEGORIES = frozenset({"electronics", "gift_cards", "crypto", "jewelry", "gaming"})
 
 INSERT_SQL = """
 INSERT INTO feature_snapshots (
@@ -135,7 +141,8 @@ INSERT INTO feature_snapshots (
     amount_mean_24h, amount_std_24h, amount_zscore,
     distinct_merchants_1h, distinct_merchants_24h,
     impossible_travel_flag, seconds_since_last_txn,
-    shared_device_count, shared_merchant_fraud_count, hop_distance_to_fraud
+    shared_device_count, shared_merchant_fraud_count, hop_distance_to_fraud,
+    is_foreign_ip, log_amount, is_card_not_present, is_high_risk_category
 ) VALUES %s
 ON CONFLICT (txn_id) DO NOTHING
 """
@@ -158,6 +165,11 @@ class FeatureVector:
     shared_device_count: int
     shared_merchant_fraud_count: int
     hop_distance_to_fraud: int
+    # Direct signal features aligned with label logic
+    is_foreign_ip: float
+    log_amount: float
+    is_card_not_present: float
+    is_high_risk_category: float
 
     def as_redis_hash(self) -> dict:
         """String-encoded values for HSET (Redis hashes are string-typed)."""
@@ -174,6 +186,10 @@ class FeatureVector:
             "shared_device_count": str(self.shared_device_count),
             "shared_merchant_fraud_count": str(self.shared_merchant_fraud_count),
             "hop_distance_to_fraud": str(self.hop_distance_to_fraud),
+            "is_foreign_ip": repr(self.is_foreign_ip),
+            "log_amount": repr(self.log_amount),
+            "is_card_not_present": repr(self.is_card_not_present),
+            "is_high_risk_category": repr(self.is_high_risk_category),
             "last_txn_id": self.txn_id,
             "last_txn_ts": self.txn_timestamp.isoformat(),
             "feature_computed_at": datetime.now(timezone.utc).isoformat(),
@@ -196,6 +212,10 @@ class FeatureVector:
             self.shared_device_count,
             self.shared_merchant_fraud_count,
             self.hop_distance_to_fraud,
+            self.is_foreign_ip,
+            self.log_amount,
+            self.is_card_not_present,
+            self.is_high_risk_category,
         )
 
 
@@ -368,17 +388,22 @@ class FeatureComputer:
                 last_ts = float(last_seen["last_ts"])
                 seconds_since_last_txn = max(now_ts - last_ts, 0.0)
                 last_country = last_seen.get("last_ip_country", "")
-                last_device = last_seen.get("last_device_id", "")
+                # Fixed: removed device_id requirement (too strict); flag fires
+                # whenever the country changes within the travel time window.
                 if (
                     last_country
                     and last_country != txn.ip_country
-                    and last_device
-                    and last_device != txn.device_id
                     and seconds_since_last_txn <= IMPOSSIBLE_TRAVEL_MAX_SECONDS
                 ):
                     impossible_travel_flag = 1
             except (KeyError, ValueError):
                 pass
+
+        from common.feature_columns import _home_country_for_user
+        is_foreign_ip = 1.0 if txn.ip_country != _home_country_for_user(txn.user_id) else 0.0
+        log_amount = math.log1p(float(txn.amount))
+        is_card_not_present = 1.0 if (txn.channel.value if hasattr(txn.channel, 'value') else txn.channel) == 'card_not_present' else 0.0
+        is_high_risk_category = 1.0 if txn.merchant_category in HIGH_RISK_CATEGORIES else 0.0
 
         # Fetch graph features and update graph
         graph_writer.write(txn)
@@ -402,6 +427,10 @@ class FeatureComputer:
             shared_device_count=shared_device_count,
             shared_merchant_fraud_count=shared_merchant_fraud_count,
             hop_distance_to_fraud=hop_distance_to_fraud,
+            is_foreign_ip=is_foreign_ip,
+            log_amount=round(log_amount, 6),
+            is_card_not_present=is_card_not_present,
+            is_high_risk_category=is_high_risk_category,
         )
 
         # Validate schema contract before storing anything

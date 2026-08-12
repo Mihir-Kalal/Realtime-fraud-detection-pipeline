@@ -84,7 +84,11 @@ CREATE TABLE IF NOT EXISTS feature_snapshots (
     seconds_since_last_txn  DOUBLE PRECISION NOT NULL,
     shared_device_count     INTEGER NOT NULL DEFAULT 0,
     shared_merchant_fraud_count INTEGER NOT NULL DEFAULT 0,
-    hop_distance_to_fraud   INTEGER NOT NULL DEFAULT 0
+    hop_distance_to_fraud   INTEGER NOT NULL DEFAULT 0,
+    is_foreign_ip           DOUBLE PRECISION NOT NULL DEFAULT 0,
+    log_amount              DOUBLE PRECISION NOT NULL DEFAULT 0,
+    is_card_not_present     DOUBLE PRECISION NOT NULL DEFAULT 0,
+    is_high_risk_category   DOUBLE PRECISION NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_feature_snapshots_user_id

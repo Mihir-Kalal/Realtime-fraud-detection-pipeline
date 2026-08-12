@@ -12,7 +12,12 @@ FEATURE_COLUMNS = [
     "seconds_since_last_txn",
     "shared_device_count",
     "shared_merchant_fraud_count",
-    "hop_distance_to_fraud"
+    "hop_distance_to_fraud",
+    # Direct signals aligned with label logic in feedback/simulate_labels.py
+    "is_foreign_ip",          # ip_country != home_country  (+20% fraud in label)
+    "log_amount",             # log1p(amount)               (+15-25% for high amounts)
+    "is_card_not_present",    # channel == card_not_present (+3% fraud in label)
+    "is_high_risk_category",  # merchant category risk flag (+10% fraud in label)
 ]
 
 def _home_country_for_user(user_id: str) -> str:

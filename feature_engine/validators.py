@@ -18,6 +18,11 @@ feature_schema = pa.DataFrameSchema({
     "shared_device_count": pa.Column(int, pa.Check.ge(0)),
     "shared_merchant_fraud_count": pa.Column(int, pa.Check.ge(0)),
     "hop_distance_to_fraud": pa.Column(int, pa.Check.ge(0)),
+    # Direct signal features aligned with label logic
+    "is_foreign_ip": pa.Column(float, pa.Check.isin([0.0, 1.0])),
+    "log_amount": pa.Column(float, pa.Check.ge(0.0)),
+    "is_card_not_present": pa.Column(float, pa.Check.isin([0.0, 1.0])),
+    "is_high_risk_category": pa.Column(float, pa.Check.isin([0.0, 1.0])),
 })
 
 def validate_feature_vector(fv: Any) -> None:

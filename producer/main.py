@@ -132,7 +132,7 @@ class TransactionProducer:
         new_device = f"device_{uuid.uuid4().hex[:10]}"  # new/unrecognized device
         updates: dict = {"ip_country": new_country, "device_id": new_device}
         if user.last_txn_time is not None:
-            updates["timestamp"] = user.last_txn_time + timedelta(seconds=random.randint(30, 300))
+            updates["timestamp"] = user.last_txn_time + timedelta(seconds=random.randint(1, 10))
         return txn.model_copy(update=updates)
 
     def generate_event(self) -> tuple[Transaction, str | None]:

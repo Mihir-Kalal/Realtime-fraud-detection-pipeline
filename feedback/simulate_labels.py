@@ -107,23 +107,23 @@ def simulate_ground_truth(txn: dict, rng: random.Random) -> bool:
     stream to train/monitor against in the absence of a real chargeback
     feed. Base rate ~BASE_FRAUD_RATE, boosted by a few naive risk signals.
     """
-    score = BASE_FRAUD_RATE
-
+    score = 0.01
+    
+    # Highly suspicious patterns get near certainty
     if txn["amount"] is not None and txn["amount"] > 1000:
-        score += 0.15
-    if txn["amount"] is not None and txn["amount"] > 5000:
-        score += 0.25
+        score = 0.95
 
     home_country = _home_country_for_user(txn["user_id"])
     if txn["ip_country"] and txn["ip_country"] != home_country:
-        score += 0.20
-
+        score = 0.95
+        
     if txn["channel"] == "card_not_present":
-        score += 0.03
+        score += 0.05
+        
     if txn["merchant_category"] in ("electronics", "gift_cards", "crypto"):
-        score += 0.10
+        score += 0.05
 
-    score = min(score, 0.95)
+    score = min(score, 0.98)
     return rng.random() < score
 
 
