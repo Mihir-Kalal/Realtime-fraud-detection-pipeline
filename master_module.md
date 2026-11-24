@@ -34,608 +34,208 @@ Every transaction entering the pipeline is one of **5 behavioral archetypes**. E
 ```mermaid
 flowchart TD
     %% ══════════════════════════════════════════════════════════════
-    %% MODULE 1 — INFRASTRUCTURE & CONCURRENCY
+    %% GLOBAL STYLING CLASSES
     %% ══════════════════════════════════════════════════════════════
+    classDef client fill:#E1F5FE,stroke:#0288D1,stroke-width:2px;
+    classDef stream fill:#FFF3E0,stroke:#F57C00,stroke-width:2px;
+    classDef storage fill:#E8F5E9,stroke:#388E3C,stroke-width:2px;
+    classDef compute fill:#EDE7F6,stroke:#512DA8,stroke-width:2px;
+    classDef decision fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px;
+    classDef approve fill:#E8F8F5,stroke:#00B894,stroke-width:2px;
+    classDef decline fill:#FFEBEE,stroke:#D32F2F,stroke-width:2px;
+    classDef alert fill:#FFCDD2,stroke:#C62828,stroke-width:2px;
+    classDef stepup fill:#FFF8E1,stroke:#FFA000,stroke-width:2px;
+    classDef async fill:#ECEFF1,stroke:#607D8B,stroke-width:1.5px,stroke-dasharray: 4 4;
 
-    subgraph MOD1["📦 MODULE 1 — Infrastructure: Docker, asyncio, Gunicorn"]
+    %% ══════════════════════════════════════════════════════════════
+    %% TIER 1: INGRESS & STREAMING INFRASTRUCTURE (MOD 1 & 2)
+    %% ══════════════════════════════════════════════════════════════
+    subgraph TIER1 ["1. INGRESS, DOCKER INFRASTRUCTURE & KAFKA STREAMING (MOD 1 & 2)"]
         direction TB
-        DOCKER["12-Service Docker Compose Cluster
-        • Linux Namespaces: CLONE_NEWPID, CLONE_NEWNET
-        • cgroups v2: memory.max=2g, cpus=4.0
-        • User-Defined Bridge: DNS at 127.0.0.11
-        • service_healthy conditions enforced"]
 
-        GUNICORN["Gunicorn Master (PID 1 in Container)
-        • fork() × 4 → Worker PIDs 101–104
-        • SO_REUSEPORT: kernel hashes 4-tuple → worker queue
-        • SIGHUP rolling reload, SIGCHLD crash recovery
-        • NEVER touches HTTP payload bytes"]
+        CLIENT(["<b>Checkout Service / Client</b><br/>POST /score on port 8000"]):::client
+        LOAD_GEN(["<b>Locust Load Generator</b><br/>200 Greenlets | 3100 RPS"]):::async
 
-        UVICORN["4× Uvicorn Workers (UvicornWorker)
-        • uvloop (C-extension wrapping libuv)
-        • Own GIL, own heap, own L1 TTLCache
-        • Single-thread asyncio event loop per worker
-        • epoll_create1() → Red-Black Tree of monitored FDs"]
+        subgraph SVR_CONTAINER ["Docker Container (FastAPI Serving) - cgroups: 4 CPUs, 2GB RAM"]
+            GUNICORN["<b>Gunicorn Master PID 1</b><br/>SO_REUSEPORT socket distribution"]:::compute
+            W1["<b>Uvicorn Worker 1</b><br/>uvloop / epoll"]:::compute
+            W2["<b>Uvicorn Worker 2</b><br/>uvloop / epoll"]:::compute
+            W3["<b>Uvicorn Worker 3</b><br/>uvloop / epoll"]:::compute
+            W4["<b>Uvicorn Worker 4</b><br/>uvloop / epoll"]:::compute
+            GUNICORN --> W1 & W2 & W3 & W4
+        end
 
-        DOCKER --> GUNICORN --> UVICORN
+        PRODUCER["<b>Synthetic Producer</b><br/>200 Seeded Users | 5pct Fraud Injection"]:::compute
+        FRAUD_BRANCH{"<b>Fraud Injection Branch</b>"}:::decision
+        MSGPACK["<b>MessagePack Serializer</b><br/>msgpack.packb binary"]:::compute
+        PARTITIONER["<b>Murmur2 Partitioner</b><br/>hash(user_id) % 3"]:::compute
+
+        subgraph KAFKA_CLUSTER ["Kafka KRaft Broker Cluster (Confluent 7.6.0 - Raft Metadata)"]
+            KP0[["<b>Topic: transactions - Partition 0</b><br/>Normal Retail Traffic"]]:::stream
+            KP1[["<b>Topic: transactions - Partition 1</b><br/>Hot Partition (Burst Attacks)"]]:::stream
+            KP2[["<b>Topic: transactions - Partition 2</b><br/>Outliers & Ring Traffic"]]:::stream
+            KDLQ[["<b>Topic: transactions:dlq</b><br/>Poison Payloads (HTTP 422)"]]:::alert
+        end
+
+        CLIENT -->|HTTP POST| GUNICORN
+        LOAD_GEN -.->|Simulated RPS| CLIENT
+        PRODUCER --> FRAUD_BRANCH
+        FRAUD_BRANCH -->|Normal 95pct| MSGPACK
+        FRAUD_BRANCH -->|Burst / Outlier / Travel 5pct| MSGPACK
+        MSGPACK --> PARTITIONER
+        PARTITIONER --> KP0 & KP1 & KP2
     end
 
     %% ══════════════════════════════════════════════════════════════
-    %% MODULE 2 — KAFKA INGESTION
+    %% TIER 2: ASYNC FEATURE ENGINE & HOT STATE (MOD 3 & 4)
     %% ══════════════════════════════════════════════════════════════
-
-    subgraph MOD2["📨 MODULE 2 — Kafka KRaft: Transaction Ingestion"]
+    subgraph TIER2 ["2. REAL-TIME ASYNC FEATURE PIPELINE (MOD 3 & 4)"]
         direction TB
 
-        PROD["Synthetic Producer (producer/main.py)
-        • 200 deterministic users, seed=42
-        • Gaussian typical_amount per user
-        • FRAUD_RATE=5%: velocity_spike, amount_outlier, impossible_travel"]
+        FE_CONSUMER["<b>KafkaReader Consumer</b><br/>group_id: feature_engine-cg<br/>enable_auto_commit=False"]:::compute
 
-        FRAUD_GEN{{"Fraud Pattern Injection — 5pct of transactions"}}
+        subgraph REDIS_PIPELINE ["Redis 7.2 Engine (ae.c Event Loop)"]
+            REDIS_ZSET[("<b>Redis ZSET (Skip-List)</b><br/>24h History Window<br/>Member: ts|amt|merchant"):::storage
+            REDIS_HASH_LAST[("<b>Redis HASH: last_seen</b><br/>last_ts, ip_country, device"):::storage
+            REDIS_HASH_FEAT[("<b>Redis HASH: features:user:id</b><br/>17-Float Online Serving Vector"):::storage
+        end
 
-        TYPE1_GEN["TYPE 1 — Normal Retail
-        • amount ~ Gaussian(10–300 INR)
-        • home_country via SHA-256 hash of user_id"]
-        TYPE2_GEN["TYPE 2 — Velocity Spike
-        • 5–10 rapid micro-txns per user
-        • amount: 5–50 INR, model_copy(update={'amount':x})"]
-        TYPE3_GEN["TYPE 3 — Amount Outlier
-        • amount = 15×–50× typical_amount
-        • Single transaction, same user"]
-        TYPE4_GEN["TYPE 4 — Impossible Travel
-        • ip_country = foreign country
-        • timestamp = last_ts + 1–10 seconds
-        • new device_id injected"]
+        FE_COMPUTE["<b>In-Memory Feature Calculator</b><br/>count_1h, count_24h, z-score, impossible_travel"]:::compute
+        PANDERA_VAL{"<b>Pandera Contract Valid?</b>"}:::decision
+        PG_BUFFER["<b>Postgres Snapshot Buffer</b><br/>Batch 20 records or 2s flush"]:::storage
+        OFFSET_COMMIT["<b>Kafka Offset Commit</b><br/>reader.commit() (At-Least-Once)"]:::compute
 
-        MSGPACK["MessagePack Serialization
-        (msgpack.packb — compact binary)"]
-
-        MURMUR2["Murmur2 Partitioner Engine
-        partition = (Murmur2(user_id.encode()) & 0x7fffffff) % 3
-        • TYPE 1 users 1,3 → Partition 0
-        • TYPE 2–4 high-vol → Partition 1 (skew risk)
-        • TYPE 1 users 2,4 → Partition 2"]
-
-        ACCUMULATOR["RecordAccumulator (32MB BufferPool)
-        • linger.ms=5, batch.size=16384
-        • acks='all', retries=5
-        • Partition 1 fills 16KB batches in ~10ms (TYPE 2 attack)
-        • Partition 0,2 fill over hours (TYPE 1 retail)"]
-
-        KAFKA_BROKER["Kafka KRaft Broker (Confluent 7.6.0)
-        • Node 1: Broker + Controller in same JVM
-        • No ZooKeeper: Raft metadata log
-        • Acceptor → Processor → KafkaRequestHandler
-        • Append to .log segment (Page Cache dirty pages)
-        • kworker flushes dirty pages to NVMe async"]
-
-        DLQ_PROD["Poison payload → Dead Letter Queue
-        transactions:dlq (Pydantic 422 rejection)"]
-
-        PROD --> FRAUD_GEN
-        FRAUD_GEN -->|"95%"| TYPE1_GEN
-        FRAUD_GEN -->|"~1.7%"| TYPE2_GEN
-        FRAUD_GEN -->|"~1.7%"| TYPE3_GEN
-        FRAUD_GEN -->|"~1.7%"| TYPE4_GEN
-        TYPE1_GEN & TYPE2_GEN & TYPE3_GEN & TYPE4_GEN --> MSGPACK
-        MSGPACK --> MURMUR2 --> ACCUMULATOR --> KAFKA_BROKER
+        KP0 & KP1 & KP2 -->|Raw Bytes Poll| FE_CONSUMER
+        FE_CONSUMER -->|1. Pipelined Read (1 RTT)| REDIS_ZSET & REDIS_HASH_LAST
+        REDIS_ZSET & REDIS_HASH_LAST --> FE_COMPUTE
+        FE_COMPUTE --> PANDERA_VAL
+        PANDERA_VAL -->|Yes: Valid| REDIS_HASH_FEAT
+        PANDERA_VAL -->|No: Poison| KDLQ
+        REDIS_HASH_FEAT -->|2. Pipelined Write| PG_BUFFER
+        PG_BUFFER --> OFFSET_COMMIT
     end
 
     %% ══════════════════════════════════════════════════════════════
-    %% MODULE 3 — FEATURE ENGINE (REDIS HOT STORE)
+    %% TIER 3: SERVING HOT PATH (< 7ms SLA) (MOD 4 & 5)
     %% ══════════════════════════════════════════════════════════════
-
-    subgraph MOD3["⚡ MODULE 3 — Feature Engine: Redis 7.2 Hot Store"]
+    subgraph TIER3 ["3. ULTRA-LOW LATENCY SERVING HOT PATH (MOD 4 & 5 - Under 7ms SLA)"]
         direction TB
 
-        KAFKA_CONSUMER["KafkaReader Consumer (common/kafka_reader.py)
-        • group_id='feature_engine-cg'
-        • enable_auto_commit=False (At-Least-Once)
-        • Poll partition → recv() from kernel socket buffer
-        • Pydantic v2 Rust validation on raw bytes"]
+        PYDANTIC["<b>Pydantic v2 Rust SIMD Parser</b><br/>pydantic-core: 0.25ms"]:::compute
 
-        EPOCH_TS["Epoch Timestamp Normalization
-        now_ts = txn.timestamp.astimezone(UTC).timestamp()
-        IEEE 754 float64 scalar (e.g., 1700000000.123456)"]
+        subgraph CACHE_HIERARCHY ["Two-Tier Cache Hierarchy"]
+            L1_CACHE["<b>L1 In-Process TTLCache</b><br/>Per-Worker Heap | TTL: 10s | Latency: 5µs"]:::storage
+            L1_CHECK{"<b>L1 Cache Hit?</b>"}:::decision
+            CIRCUIT_BREAKER{"<b>pybreaker FSM</b><br/>fail_max=3, reset=10s"}:::decision
+            FALLBACK_VEC["<b>Cold-Start Fallback</b><br/>Zero-vector: 17x 0.0 (Fail-Fast 2µs)"]:::alert
+        end
 
-        READ_PIPE["Redis Pipelined Read (1 TCP RTT)
-        pipe = r.pipeline()
-        1. pipe.zremrangebyscore(hkey, 0, now_ts−86400)  → Lazy prune >24h
-        2. pipe.zrangebyscore(hkey, now_ts−86400, now_ts) → Fetch 24h window
-        3. pipe.hgetall(lkey)                             → User baseline hash
-        pipe.execute() → Single send()/recv() syscall (0.5ms vs 1.5ms)"]
+        GATHER["<b>asyncio.gather() Fan-Out</b><br/>Concurrent: velocity + profile + graph"]:::compute
+        BATCHER_QUEUE[["<b>ModelBatcher Micro-Queue</b><br/>Dynamic coalescing: max 50 items or 5ms"]]:::stream
 
-        REDIS_ENGINE["Redis 7.2 Engine (ae.c single-thread)
-        ZSET: Skip List (O(log N) insert) + Hash Table (O(1) lookup)
-        • Score = epoch timestamp (float64)
-        • Member = '{now_ts}|{amount}|{merchant_id}'
-        HASH: last_ts, last_ip_country, last_device_id"]
+        subgraph ORT_CORE ["ONNX Runtime C++ Inference Engine"]
+            ORT_EXEC["<b>OrtRunSession (AVX-512 SIMD)</b><br/>Py_BEGIN_ALLOW_THREADS: GIL Released<br/>Batch: 1.5ms | Single: 0.8ms"]:::compute
+        end
 
-        FEATURE_COMPUTE["In-Memory Feature Computation Engine"]
+        ORJSON_SERIAL["<b>orjson Rust Serializer</b><br/>18µs AVX2 Response Vectorization"]:::compute
+        HTTP_OK(["<b>HTTP 200 OK Response</b><br/>P99: 3.35ms (SLA &lt; 7.0ms)"]):::approve
 
-        VEL_FEAT["Velocity Features
-        count_1h = Σ I(ts >= now_ts−3600) + 1
-        count_24h = len(history_24h) + 1
-        distinct_merchants_1h, distinct_merchants_24h"]
-
-        STAT_FEAT["Statistical Amount Features
-        μ_24h = statistics.fmean(amounts_24h)
-        σ_24h = statistics.pstdev(amounts_24h)
-        Z = (txn.amount − μ) / σ  (if σ > 0 else 0.0)
-        • TYPE 3 outlier: Z ≈ 15–50 → extreme signal"]
-
-        TRAVEL_FEAT["Impossible Travel Heuristic
-        Δt = now_ts − float(last_seen['last_ts'])
-        FLAG=1 if country_current ≠ country_last AND Δt ≤ 3600s
-        • TYPE 4: FLAG always = 1"]
-
-        STATIC_FEAT["Static Transformations
-        is_foreign_ip = (ip_country ≠ home_country)
-        log_amount = math.log1p(float(txn.amount))
-        high_risk_mcc = (merchant_category in HIGH_RISK_SET)"]
-
-        GRAPH_HYDRATE["Graph Risk Feature Hydration (Neo4j Precomputed Cache)
-        shared_device_count, shared_merchant_fraud_count
-        hop_distance_to_fraud
-        (Read from Redis hash — not live Neo4j query)"]
-
-        FV_VALIDATE["FeatureVector Dataclass + Pandera Schema Validation
-        17 finalized float features
-        validate_feature_vector(fv) → contract enforcement"]
-
-        WRITE_PIPE["Redis Pipelined Write (1 TCP RTT)
-        write_pipe = r.pipeline()
-        1. write_pipe.zadd(hkey, {member: now_ts})       → Append to history ZSET
-        2. write_pipe.expire(hkey, 86700)                → 24h+5min TTL
-        3. write_pipe.hset(lkey, mapping={...})          → Overwrite baseline hash
-        4. write_pipe.hset(fkey, mapping=fv.as_redis_hash()) → Write serving vector
-        write_pipe.execute() → Atomic single-RTT network commit"]
-
-        PG_BUFFER["Postgres Snapshot Buffer
-        _pending_records enqueued in-memory
-        Flush if size>=20 OR elapsed>=2.0s
-        psycopg2 execute_values() bulk INSERT
-        → transactions + feature_snapshots tables"]
-
-        KAFKA_COMMIT["Kafka Offset Commit
-        reader.commit() → OffsetCommitRequest to Group Coordinator
-        Only after Redis write + DB buffer enqueue succeed
-        At-Least-Once: crash before commit → safe replay
-        Downstream idempotency: ZADD uniqueness + ON CONFLICT DO NOTHING"]
-
-        FLINK_BLUEPRINT["Enterprise Scale-Up (flink_streaming/)
-        Apache Flink PyFlink Topology:
-        • Bounded out-of-orderness watermarks (Δt_delay=30s)
-        • keyBy(user_id) → local RocksDB embedded state
-        • Zero network reads: local LSM-Tree NVMe state
-        • Chandy-Lamport checkpoint barriers → EOS
-        • Redis becomes write-only serving sink"]
-
-        KAFKA_CONSUMER --> EPOCH_TS --> READ_PIPE --> REDIS_ENGINE
-        REDIS_ENGINE --> FEATURE_COMPUTE
-        FEATURE_COMPUTE --> VEL_FEAT & STAT_FEAT & TRAVEL_FEAT & STATIC_FEAT
-        VEL_FEAT & STAT_FEAT & TRAVEL_FEAT & STATIC_FEAT --> GRAPH_HYDRATE
-        GRAPH_HYDRATE --> FV_VALIDATE --> WRITE_PIPE --> PG_BUFFER --> KAFKA_COMMIT
+        W1 & W2 & W3 & W4 --> PYDANTIC
+        PYDANTIC --> L1_CHECK
+        L1_CHECK -->|Hit: 98pct burst| GATHER
+        L1_CHECK -->|Miss| CIRCUIT_BREAKER
+        CIRCUIT_BREAKER -->|Closed| REDIS_HASH_FEAT
+        REDIS_HASH_FEAT -->|0.5ms Round-Trip| GATHER
+        CIRCUIT_BREAKER -->|Open| FALLBACK_VEC
+        FALLBACK_VEC --> GATHER
+        GATHER --> BATCHER_QUEUE
+        BATCHER_QUEUE --> ORT_EXEC
+        ORT_EXEC --> ORJSON_SERIAL
+        ORJSON_SERIAL --> HTTP_OK
+        HTTP_OK --> CLIENT
     end
 
     %% ══════════════════════════════════════════════════════════════
-    %% MODULE 4 — MULTI-TIER STORAGE
+    %% TIER 4: DECISION ENGINE & BANDIT ROUTER (MOD 6 & 7)
     %% ══════════════════════════════════════════════════════════════
-
-    subgraph MOD4["🗄️ MODULE 4 — Storage Tiers: Redis L2, Neo4j, PostgreSQL"]
+    subgraph TIER4 ["4. DECISION ENGINE & MULTI-ARM BANDIT ROUTING (MOD 6 & 7)"]
         direction TB
 
-        L1_CACHE_SRV["L1 In-Memory Cache (cachetools.TTLCache)
-        • Per-worker CPython heap (100k users, 10s TTL)
-        • PyDict_GetItemWithError → 0 syscalls, 0 network
-        • Latency: < 5 microseconds
-        • Per-worker isolation (Gunicorn fork COW memory)
-        TYPE 2 botnet: 50 hits → 49 L1 hits = 98% Redis bypass"]
+        ONNX_PROB["<b>ONNX Output: p_hat in [0, 1]</b><br/>Calibrated Fraud Probability"]:::compute
 
-        L1_HIT_PATH["L1 HIT → Direct heap pointer dereference
-        Skip Redis entirely → Proceed to inference"]
+        subgraph BANDIT_LAYER ["Multi-Arm Bandit Router (MD5 Deterministic Seed)"]
+            BANDIT_CHECK{"<b>Total Obs &lt; 30?</b>"}:::decision
+            FREQ_AB["<b>Frequentist A/B Split</b><br/>90pct Champion / 10pct Challenger"]:::compute
+            THOMPSON["<b>Bayesian Thompson Sampling</b><br/>theta ~ Beta(alpha, beta) | O(ln T) Regret"]:::compute
+            SHADOW_MODE["<b>Shadow Mode</b><br/>Champion authoritative, Challenger silent score"]:::async
+        end
 
-        L1_MISS_PATH["L1 MISS → Consult Circuit Breaker"]
+        THREE_TIER{"<b>Three-Tier Decision Threshold</b><br/>Optimal tau* = 0.78 - F0.5 Cost-Sensitive"}:::decision
+        TIER_APPROVE(["<b>TIER 1: AUTO-APPROVE</b><br/>p_hat &lt; 0.20 (98.5pct Volume)"]):::approve
+        TIER_STEPUP(["<b>TIER 2: STEP-UP AUTH</b><br/>0.20 &lt;= p_hat &lt; 0.78 (3DS / OTP)"]):::stepup
+        TIER_DECLINE(["<b>TIER 3: HARD DECLINE</b><br/>p_hat &gt;= 0.78 (Blocked)"]):::decline
 
-        CB_STATE{"pybreaker Circuit Breaker
-        redis_breaker (fail_max=3, reset_timeout=10s)
-        FSM: CLOSED → OPEN → HALF-OPEN → CLOSED"}
-
-        CB_CLOSED_PATH["CLOSED: Execute await client.hgetall(features:user:{id})
-        Redis HGETALL → 0.5ms–1.5ms round-trip
-        Parse floats from RESP3 response bytes"]
-
-        CB_OPEN_PATH["OPEN: Fail-fast in < 2 microseconds
-        Raise CircuitBreakerError locally
-        → Cold-start fallback vector [0.0] × 17"]
-
-        COLD_START_CHECK{"Is cold-start? Redis empty hash?"}
-
-        CACHE_HYDRATE["WARM profile → Store in L1 cache
-        self._cache[user_id] = vector (10s TTL)"]
-
-        NO_CACHE["COLD START → DO NOT cache in L1
-        Prevents poisoning: 50ms later Kafka
-        writes true features; next txn reads Redis fresh"]
-
-        NEO4J_ASYNC["Neo4j 5.20 — Async Graph Ingestion (Decoupled from hot path)
-        GraphWriter consumes from Kafka (transactions.streaming)
-        MERGE (u:User)-[:USED_DEVICE]->(d:Device)
-        MERGE (u)-[:TRANSACTED_AT]->(m:Merchant)
-        MERGE (u)-[:FROM_COUNTRY]->(c:IPCountry)"]
-
-        NEO4J_ANALYTICS["Background Graph Analytics Workers
-        2-hop shared device: MATCH (u)-[:USED_DEVICE]->(d)<-[:USED_DEVICE]-(other)
-        Bounded shortest path: shortestPath((start)-[*..5]-(fraud:FlaggedFraud))
-        GDS batch: WCC, Louvain Modularity, PageRank
-        → TYPE 5 ring members get hop_distance_to_fraud ≤ 2"]
-
-        NEO4J_TO_REDIS["Periodic sync → HSET features:user:{id}
-        shared_device_count, hop_distance_to_fraud
-        Enriches serving vector in Redis hash"]
-
-        PG_ASYNC["PostgreSQL 16 — asyncpg Binary Protocol
-        • Binary wire format: zero string conversions
-        • Connection pool: min=10, max=50 per worker
-        • Executed via FastAPI BackgroundTasks (off critical path)
-        tables: transactions, predictions, feature_snapshots, labels"]
-
-        L1_CACHE_SRV -->|"Hit"| L1_HIT_PATH
-        L1_CACHE_SRV -->|"Miss"| L1_MISS_PATH
-        L1_MISS_PATH --> CB_STATE
-        CB_STATE -->|"CLOSED"| CB_CLOSED_PATH
-        CB_STATE -->|"OPEN"| CB_OPEN_PATH
-        CB_CLOSED_PATH --> COLD_START_CHECK
-        CB_OPEN_PATH --> COLD_START_CHECK
-        COLD_START_CHECK -->|"Warm"| CACHE_HYDRATE
-        COLD_START_CHECK -->|"Cold"| NO_CACHE
-        CACHE_HYDRATE & NO_CACHE --> L1_HIT_PATH
-        NEO4J_ANALYTICS --> NEO4J_TO_REDIS
+        ORT_EXEC --> ONNX_PROB
+        ONNX_PROB --> BANDIT_CHECK
+        BANDIT_CHECK -->|Yes: Cold-Start| FREQ_AB
+        BANDIT_CHECK -->|No: Mature| THOMPSON
+        FREQ_AB & THOMPSON --> SHADOW_MODE
+        SHADOW_MODE --> THREE_TIER
+        THREE_TIER -->|p_hat &lt; 0.20| TIER_APPROVE
+        THREE_TIER -->|0.20 &lt;= p_hat &lt; 0.78| TIER_STEPUP
+        THREE_TIER -->|p_hat &gt;= 0.78| TIER_DECLINE
     end
 
     %% ══════════════════════════════════════════════════════════════
-    %% MODULE 5 — SERVING LAYER
+    %% TIER 5: ASYNC AUDIT, GRAPH & MLOPS SELF-HEALING (MOD 4, 8 & 9)
     %% ══════════════════════════════════════════════════════════════
-
-    subgraph MOD5["🚀 MODULE 5 — Ultra-Low Latency Serving & Inference"]
+    subgraph TIER5 ["5. ASYNC AUDIT, GRAPH ANALYTICS & MLOPS FEEDBACK (MOD 4, 8 & 9)"]
         direction TB
 
-        CLIENT_REQ["Payment Gateway / Checkout Service
-        POST /score HTTP/1.1 (port 8000)
-        {txn_id, user_id, amount, merchant_id, device_id,
-         currency, merchant_category, timestamp, ip_country, channel}"]
+        SHAP_GATE{"<b>is_flagged == True?</b>"}:::decision
+        TREESHAP["<b>Async TreeSHAP (asyncio.to_thread)</b><br/>C++ O(T*L*D^2) = 25ms (Off Event Loop)"]:::compute
 
-        KERNEL_DISPATCH["Linux Kernel SO_REUSEPORT Dispatch
-        Worker = Hash(src_ip, src_port, dst_ip, dst_port) % 4
-        O(1) kernel time, zero inter-worker locks
-        TCP SYN → specific worker listen queue"]
+        subgraph STORAGE_AUDIT ["PostgreSQL 16 & Neo4j 5.20 Graph"]
+            PG_DB[("<b>PostgreSQL 16 (asyncpg)</b><br/>tables: predictions, snapshots, labels"):::storage
+            NEO4J_GRAPH[("<b>Neo4j 5.20 Graph (IFA)</b><br/>MATCH (u)-[:USED_DEVICE]->(d)<br/>shortestPath to FlaggedFraud"):::storage
+        end
 
-        ASGI_RECEIVE["Starlette ASGI Contract
-        async def app(scope, receive, send)
-        scope: connection metadata dict
-        receive: non-blocking TCP payload stream
-        send: async HTTP response channel"]
+        NEO4J_SYNC["<b>Periodic Graph Risk Sync</b><br/>HSET shared_device, hop_distance"]:::async
 
-        PYDANTIC_PARSE["Pydantic v2 Rust Deserialization (pydantic-core)
-        • SIMD JSON scan (AVX2/NEON): 32–64 bytes/clock
-        • Direct struct memory layout, zero PyDict
-        • Field validators: currency.upper(), country.upper()
-        • Fast-fail: amount<0 → HTTP 422 in <0.1ms
-        Latency: ~0.25ms (10× faster than Pydantic v1)"]
+        subgraph MLOPS_DAEMON ["MLOps Drift Daemon (monitoring/drift.py - 300s Tick)"]
+            DRIFT_QUERY["<b>Drift Window Query</b><br/>6h Live vs 72h Baseline"]:::compute
+            KS_TEST{"<b>KS Test p-val &lt; 0.01?</b><br/>Prediction Drift sup|F1-F2|"}:::decision
+            PSI_CALC{"<b>PSI &gt;= 0.25?</b><br/>Feature Drift - Jeffreys Div"}:::decision
+            SOC_ALERT><b>🚨 SOC SECURITY ALERT</b><br/>Active Attack Wave (DO NOT RETRAIN!)]:::alert
+            COOLDOWN_CHECK{"<b>Cooldown &lt; 60m?</b>"}:::decision
+            RETRAIN_EXEC["<b>Automated Retraining</b><br/>XGBoost: scale_pos_weight=499"]:::compute
+            MLFLOW_REG["<b>MLflow 2.14 Registry</b><br/>Artifact Store + Run Metrics"]:::compute
+            HOT_RELOAD["<b>Zero-Downtime Hot Reload</b><br/>Atomic 64-bit Pointer Swap (&lt;1µs)"]:::compute
+        end
 
-        GATHER_FEATURES["asyncio.gather() Fan-Out
-        Concurrent hydration in max(1.2, 1.0, 0.8) = 1.2ms
-        1. velocity from Redis (1.2ms)
-        2. profile baseline from Redis (1.0ms)
-        3. graph risk flags (0.8ms)
-        Sequential would be: 1.2+1.0+0.8=3.0ms"]
+        STREAMLIT(["<b>Streamlit Dashboard :8501</b><br/>SQL NULLIF Zero-Division Protection"]):::client
 
-        MICRO_BATCHER["ModelBatcher — Dynamic Micro-Batching (serving/scoring.py)
-        future = loop.create_future()           ← Empty Promise
-        await batcher.queue.put((vector, future)) ← Enqueue
-        await future                             ← SUSPEND (YIELD_VALUE)
-        Coroutine suspends, yields CPU to uvloop event loop"]
+        TIER_APPROVE & TIER_STEPUP & TIER_DECLINE --> SHAP_GATE
+        SHAP_GATE -->|Yes: Flagged| TREESHAP
+        SHAP_GATE -->|No: Approved| PG_DB
+        TREESHAP -->|top_shap_features JSONB| PG_DB
+        KP0 & KP1 & KP2 -.->|Stream Ingest| NEO4J_GRAPH
+        NEO4J_GRAPH --> NEO4J_SYNC
+        NEO4J_SYNC -.->|Background Enrichment| REDIS_HASH_FEAT
 
-        BATCHER_LOOP["ModelBatcher Background Worker Loop
-        Dual-trigger drain:
-        • High traffic (3100 RPS): queue fills 50 items in 1ms → fire
-        • Low traffic (5 RPS): await asyncio.sleep(5ms) → fire anyway
-        np_batch = np.array(vectors, dtype=np.float32) → shape (B, 30)
-        No request ever held hostage > 5ms"]
+        PG_DB -.->|14-60 Day Labels| THOMPSON
+        PG_DB -.->|Telemetry| DRIFT_QUERY
+        DRIFT_QUERY --> KS_TEST
+        KS_TEST -->|Yes: Attack| SOC_ALERT
+        KS_TEST -->|No| PSI_CALC
+        PSI_CALC -->|Yes: Drifted| COOLDOWN_CHECK
+        COOLDOWN_CHECK -->|No: Elapsed| RETRAIN_EXEC
+        COOLDOWN_CHECK -->|Yes: Active| DRIFT_QUERY
+        RETRAIN_EXEC --> MLFLOW_REG --> HOT_RELOAD
+        HOT_RELOAD -.->|Load New Weights| ORT_EXEC
 
-        ONNX_INFER["ONNX Runtime C++ Inference Engine
-        intra_op_num_threads=1, inter_op_num_threads=1
-        ORT_SEQUENTIAL, ORT_ENABLE_ALL (graph optimized at load)
-        ─────────────────────────────────────
-        Py_BEGIN_ALLOW_THREADS   ← GIL RELEASED
-        OrtRunSession()          ← Pure C++ AVX-512 SIMD
-        Py_END_ALLOW_THREADS     ← GIL RE-ACQUIRED
-        ─────────────────────────────────────
-        32 FLOPs/cycle/core × 4 cores × 3GHz = 384 GFLOPs/sec
-        Single txn: ~0.8ms | Batch of 50: ~1.5ms"]
-
-        RESOLVE_FUTURES["Resolve All Futures
-        for i, (prob, lat) in enumerate(outputs):
-            futures[i].set_result((prob, lat))
-        Each suspended coroutine wakes up at YIELD_VALUE resume point"]
-
-        ORJSON_RESP["orjson.dumps() — ORJSONResponse
-        Rust SIMD AVX2 byte vectorization
-        Zero Python str heap allocations, GIL not held
-        Serialization: ~18 microseconds (vs 350µs for json.dumps)"]
-
-        HTTP_200["HTTP 200 OK → TCP Socket → Client
-        P50: 1.4ms | P99: 3.35ms | SLA: < 7.0ms ✓"]
-
-        CLIENT_REQ --> KERNEL_DISPATCH --> ASGI_RECEIVE --> PYDANTIC_PARSE
-        PYDANTIC_PARSE --> GATHER_FEATURES --> MICRO_BATCHER
-        MICRO_BATCHER --> BATCHER_LOOP --> ONNX_INFER --> RESOLVE_FUTURES
-        RESOLVE_FUTURES --> ORJSON_RESP --> HTTP_200
+        PG_DB --> STREAMLIT
     end
-
-    %% ══════════════════════════════════════════════════════════════
-    %% MODULE 6 — ML MATHEMATICS & DECISIONING
-    %% ══════════════════════════════════════════════════════════════
-
-    subgraph MOD6["🧮 MODULE 6 — ML Math, Threshold Optimization & Explainability"]
-        direction TB
-
-        SCORE_IN["ONNX Output: fraud_probability p̂ ∈ [0, 1]"]
-
-        THREE_TIER{"Three-Tier Decision Router
-        F₀.₅-optimized threshold τ* ≈ 0.78"}
-
-        AUTO_APPROVE["TIER 1 — AUTO-APPROVE (p̂ < 0.20)
-        TYPE 1 normal retail → 98.5% of volume
-        Frictionless checkout in 3.35ms P99"]
-
-        STEP_UP["TIER 2 — STEP-UP AUTH (0.20 ≤ p̂ < 0.78)
-        TYPE 2 velocity spike (borderline)
-        TYPE 3 amount outlier (medium confidence)
-        TYPE 5 graph ring (marginal distance)
-        3D-Secure 2.0: SMS OTP / Biometric
-        Legitimate cardholders verify → bots drop"]
-
-        HARD_DECLINE["TIER 3 — HARD DECLINE (p̂ ≥ 0.78)
-        TYPE 4 impossible travel → almost always here
-        TYPE 2 extreme velocity spike
-        TYPE 5 hop_distance_to_fraud = 1
-        is_flagged = True"]
-
-        SHAP_GUARD{"is_flagged == True?"}
-
-        SHAP_SKIP["Return HTTP 200 immediately
-        P99 = 3.35ms (SLA protected)
-        top_shap_features = {} in response"]
-
-        SHAP_ASYNC["FastAPI BackgroundTasks.add_task(
-            _compute_and_store_shap, txn_id, vector, model)
-        asyncio.to_thread(_compute) → Worker ThreadPool
-        (leaves uvloop event loop unblocked for 3000 TPS)"]
-
-        TREESHAP["TreeSHAP C++ Execution
-        O(T·L·D²) = O(300 × 32 × 25) = O(240,000) ops
-        ~15–40ms on CPU (vs KernelSHAP O(2^24) = impossible)
-        Top 3 |φᵢ(x)| features extracted: np.argsort(-|SHAP|)"]
-
-        PG_SHAP["PostgreSQL async UPDATE
-        UPDATE predictions SET top_shap_features = $1::jsonb
-        WHERE txn_id = $2
-        Satisfies FCRA §1681m + GDPR Article 22"]
-
-        SCORE_IN --> THREE_TIER
-        THREE_TIER -->|"p̂ < 0.20"| AUTO_APPROVE
-        THREE_TIER -->|"0.20 ≤ p̂ < 0.78"| STEP_UP
-        THREE_TIER -->|"p̂ ≥ 0.78"| HARD_DECLINE
-        AUTO_APPROVE & STEP_UP & HARD_DECLINE --> SHAP_GUARD
-        SHAP_GUARD -->|"No"| SHAP_SKIP
-        SHAP_GUARD -->|"Yes"| SHAP_ASYNC --> TREESHAP --> PG_SHAP
-    end
-
-    %% ══════════════════════════════════════════════════════════════
-    %% MODULE 7 — DYNAMIC MODEL ROUTING
-    %% ══════════════════════════════════════════════════════════════
-
-    subgraph MOD7["🎯 MODULE 7 — Bayesian Bandits & Model Routing"]
-        direction TB
-
-        TXN_ID_HASH["Deterministic Hash Seeding
-        seed = int(md5(txn_id.encode()).hexdigest(), 16) % (2³²−1)
-        rng = np.random.default_rng(seed)
-        • Idempotent: retries route to same model arm
-        • Avalanche: uniform distribution across workers"]
-
-        SAMPLE_CHECK{"total_obs = Σ[(α−1)+(β−1)] for each model
-        total_obs < 30?"}
-
-        AB_BOOTSTRAP["Phase 1 — Frequentist A/B Bootstrap
-        roll = rng.uniform(0, 100)
-        90% → Champion (Model A)
-        10% → Challenger (Model B)"]
-
-        THOMPSON["Phase 2 — Bayesian Thompson Sampling
-        θ_A* ~ Beta(α_A, β_A)   ← Champion posterior
-        θ_B* ~ Beta(α_B, β_B)   ← Challenger posterior
-        m* = argmax(θ_A*, θ_B*)
-        Regret: O(ln T) vs O(T) for static A/B
-        Bad challenger throttled to <1% within hours"]
-
-        SHADOW_MODE{"ScoringMode?"}
-
-        SHADOW_EXEC["SHADOW — Read-Only Safety
-        PRIMARY: Champion (v1) → authoritative is_flagged
-        SHADOW: Challenger (v2) → async concurrent score
-        Logs to PostgreSQL, zero customer impact
-        Validates latency + memory before live traffic"]
-
-        BANDIT_EXEC["AB_TEST / BANDIT — Live Monetary Routing
-        Selected arm executes ONNX inference
-        Authoritative decision sent to payment switch"]
-
-        FEEDBACK_LOOP["Closed-Loop Ground Truth Feedback
-        PostgreSQL JOIN: predictions p + labels l
-        TP = p.is_flagged AND l.is_fraud
-        FP = p.is_flagged AND NOT l.is_fraud
-        FN = NOT p.is_flagged AND l.is_fraud
-        ─────────────────────────────────────
-        O(1) conjugate update every 30s:
-        α = TP + 1.0  (success register)
-        β = FP + FN + 1.0  (penalty register)"]
-
-        TXN_ID_HASH --> SAMPLE_CHECK
-        SAMPLE_CHECK -->|"Yes < 30"| AB_BOOTSTRAP --> SHADOW_MODE
-        SAMPLE_CHECK -->|"No ≥ 30"| THOMPSON --> SHADOW_MODE
-        SHADOW_MODE -->|"SHADOW"| SHADOW_EXEC
-        SHADOW_MODE -->|"BANDIT"| BANDIT_EXEC
-        SHADOW_EXEC & BANDIT_EXEC --> FEEDBACK_LOOP
-        FEEDBACK_LOOP -.->|"Updates α,β every 30s"| THOMPSON
-    end
-
-    %% ══════════════════════════════════════════════════════════════
-    %% MODULE 8 — MLOPS & DRIFT DETECTION
-    %% ══════════════════════════════════════════════════════════════
-
-    subgraph MOD8["📊 MODULE 8 — MLOps, Drift Detection & Retraining"]
-        direction TB
-
-        DRIFT_DAEMON["Drift Monitor Daemon (monitoring/drift.py)
-        Scheduled tick every 300s (5 minutes)
-        Queries: 6h live window vs. 72h baseline
-        Sources: feature_snapshots + predictions tables"]
-
-        PSI_COMPUTE["Population Stability Index (PSI)
-        PSI = Σ(Q_b − P_b) × ln(Q_b / P_b)  — Jeffreys Divergence
-        Decile bins B=10, edges pinned to [−∞, +∞]
-        np.unique() deduplication for zero-inflated features
-        eps=1e-6 Laplace clipping prevents ln(0)=-∞ crash"]
-
-        KS_TEST["Two-Sample KS Test (prediction drift)
-        D = sup_x |F1(x) − F2(x)|
-        scipy.stats.ks_2samp(baseline_probs, live_probs)
-        H0: same distribution, reject at p < 0.01"]
-
-        PSI_ROUTE{"PSI Threshold Decision"}
-        KS_ROUTE{"KS p-value < 0.01?"}
-
-        STABLE["PSI < 0.10 — Stable
-        Log telemetry to drift_events: status=STABLE"]
-
-        MODERATE_DRIFT["0.10 ≤ PSI < 0.25 — Moderate Drift
-        Warning alert to MLOps on-call"]
-
-        SECURITY_ALERT["KS p < 0.01 — PREDICTION DRIFT
-        🚨 SECURITY ALERT TO SOC
-        Active botnet / card-testing wave detected
-        STRICTLY DO NOT RETRAIN:
-        • Labels not yet matured (14–60 day dispute window)
-        • Retraining = model poisoning baked-in attack signatures"]
-
-        COOLDOWN_CHECK{"cooldown_active? Last retrain within 60 minutes?"}
-
-        COOLDOWN_SUPPRESS["Suppress retraining
-        Log drift_events: retrain_skipped_reason='cooldown (60m) active'
-        Prevents retraining thrashing: OOM cascades, CPU starvation"]
-
-        RETRAIN_TRIGGER["PSI ≥ 0.25 + cooldown elapsed
-        🚀 Trigger Automated Retraining
-        subprocess: python -m training.train
-        Feature drift = macroeconomic shift in P(X)
-        P(Y|X) still valid → retrain safe"]
-
-        TRAIN_ENGINE["XGBoost Training Engine (training/train.py)
-        SQL: feature_snapshots INNER JOIN labels (maturity gating)
-        scale_pos_weight = N_neg/N_pos ≈ 499
-        g*_i = 499×(p̂_i−1) for fraud, h*_i scaled
-        Split Gain scales by w² ≈ 249,000 (prevents leaf collapse)
-        300 estimators, early stopping on PR-AUC
-        Export → fraud-xgb.onnx (onnxmltools, opset=15)"]
-
-        MLFLOW_LOG["MLflow 2.14 Experiment Tracking
-        • Tracking Server REST API (:5000)
-        • Backend: PostgreSQL (run UUIDs, metric curves)
-        • Artifact Store: POSIX/S3 (fraud-xgb.onnx, SHAP summaries)
-        Register model version in model_registry_meta"]
-
-        HOT_RELOAD["Zero-Downtime Hot-Reloading (serving/model_registry.py)
-        _reload_poll_loop every 30s:
-        1. Query model_registry_meta WHERE is_active=TRUE
-        2. If new version: download ONNX, compile ort.InferenceSession OUT-OF-BAND
-        3. with self._lock: self._current_models = new_loaded
-           Lock held < 1 microsecond (atomic 64-bit pointer swap)
-        In-flight: old model | New requests: new model
-        ZERO dropped connections, ZERO container restarts"]
-
-        DRIFT_DAEMON --> PSI_COMPUTE --> PSI_ROUTE
-        DRIFT_DAEMON --> KS_TEST --> KS_ROUTE
-
-        KS_ROUTE -->|"p < 0.01"| SECURITY_ALERT
-        KS_ROUTE -->|"p ≥ 0.01"| PSI_ROUTE
-
-        PSI_ROUTE -->|"PSI < 0.10"| STABLE
-        PSI_ROUTE -->|"0.10–0.25"| MODERATE_DRIFT
-        PSI_ROUTE -->|"PSI ≥ 0.25"| COOLDOWN_CHECK
-
-        COOLDOWN_CHECK -->|"Active"| COOLDOWN_SUPPRESS
-        COOLDOWN_CHECK -->|"Elapsed"| RETRAIN_TRIGGER
-
-        RETRAIN_TRIGGER --> TRAIN_ENGINE --> MLFLOW_LOG --> HOT_RELOAD
-    end
-
-    %% ══════════════════════════════════════════════════════════════
-    %% MODULE 9 — RESILIENCY & OBSERVABILITY
-    %% ══════════════════════════════════════════════════════════════
-
-    subgraph MOD9["🔭 MODULE 9 — Resiliency, Load Testing & Observability"]
-        direction TB
-
-        LOCUST["Locust Load Generator (tests/load/locustfile.py)
-        200 Greenlets (gevent user-space, ~4KB stack vs 8MB thread)
-        wait_time = between(0.1s, 0.5s) — Open-loop stochastic
-        Avoids Coordinated Omission (Gil Tene's Theorem)
-        Tracks: server_latencies_ms + client wall-clock latencies_ms"]
-
-        LATENCY_PROFILE["Tail Latency Profile Under 3,100 RPS
-        P50:   2.1ms  (L1 cache hits dominate)
-        P95:   4.2ms  (L2 Redis round-trip included)
-        P99:   6.85ms ✓ (SLA < 7.0ms achieved)
-        P99.9: 18.4ms (GC sweeps, CFS jitter, TCP retransmit)"]
-
-        DASHBOARD["Streamlit Real-Time Dashboard (monitoring/dashboard.py :8501)
-        @st.cache_data(ttl=5) → prevents query stampede / pool exhaustion
-        Panels:
-        • Model traffic split (COUNT GROUP BY model_version)
-        • Latency SLA scatter (latency_ms vs 7ms threshold)
-        • Rolling fraud flag rate (date_trunc('minute', scored_at))
-        • PSI drift audit table (retrain_triggered flags)
-        • A/B label-joined metrics (Precision, Recall via NULLIF)
-        • Embedded Locust iframe (:8089)"]
-
-        NULLIF_SQL["SQL Zero-Division Protection
-        Precision = TP::FLOAT / NULLIF(TP+FP, 0)
-        Recall    = TP::FLOAT / NULLIF(TP+FN, 0)
-        JOIN labels l ON p.txn_id = l.txn_id  (INNER — no survival bias)
-        GROUP BY p.model_version"]
-
-        LOCUST --> LATENCY_PROFILE
-        DASHBOARD --> NULLIF_SQL
-    end
-
-    %% ══════════════════════════════════════════════════════════════
-    %% MASTER CONNECTOR ARROWS — MODULE FLOW
-    %% ══════════════════════════════════════════════════════════════
-
-    MOD1 -->|"Workers ready to accept TCP"| MOD2
-    KAFKA_BROKER -->|"Partitioned commit log"| MOD3
-    MOD3 -->|"Features written to Redis hash"| MOD4
-    L1_HIT_PATH -->|"Hydrated float32 vector"| MOD5
-    HTTP_200 -->|"p̂ score from ONNX"| MOD6
-    MOD6 -->|"Transaction + score"| MOD7
-    MOD7 -->|"Predictions logged to PostgreSQL"| MOD8
-    HOT_RELOAD -->|"New model active"| ONNX_INFER
-    LOCUST -->|"Load → FastAPI :8000"| CLIENT_REQ
-    PG_ASYNC -->|"predictions + labels"| DASHBOARD
-    MOD8 -.->|"Drift telemetry"| DASHBOARD
 ```
 
 ---
@@ -837,122 +437,69 @@ Each chart below traces **one transaction archetype** from birth in the producer
 
 ```mermaid
 flowchart TD
-    A1["🧑 Human Cardholder
-    user_id='Rahul_042'
-    amount=180 INR (within Gaussian range)
-    ip_country=IN (home country)
-    device_id=stable-uuid-xyz
-    TPS: 0.5 (normal frequency)"]
+    classDef client fill:#E1F5FE,stroke:#0288D1,stroke-width:2px;
+    classDef stream fill:#FFF3E0,stroke:#F57C00,stroke-width:2px;
+    classDef storage fill:#E8F5E9,stroke:#388E3C,stroke-width:2px;
+    classDef compute fill:#EDE7F6,stroke:#512DA8,stroke-width:2px;
+    classDef decision fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px;
+    classDef approve fill:#E8F8F5,stroke:#00B894,stroke-width:2px;
+    classDef async fill:#ECEFF1,stroke:#607D8B,stroke-width:1.5px,stroke-dasharray: 4 4;
 
-    A2["MOD 1 — Producer Runtime
-    seed=42, SyntheticUser constructed
-    typical_amount ~ Gaussian(10-300)
-    home_country = SHA256(user_id) % 8 → 'IN'
-    No fraud pattern injected (95% chance)"]
+    subgraph INGRESS_A ["1. INGRESS & ORDERED STREAMING"]
+        USER_A(["🧑 Legitimate Cardholder<br/>Rahul_042 | 180 INR Domestic | TPS: 0.5"]):::client
+        PROD_A["Synthetic Producer<br/>95pct Normal Retail (seed=42)"]:::compute
+        PART_A[["Kafka Partition 0<br/>Murmur2(Rahul_042): Low Traffic Log"]]:::stream
+        USER_A --> PROD_A --> PART_A
+    end
 
-    A3["MOD 2 — Serialization & Routing
-    msgpack.packb(txn) → binary bytes
-    Murmur2('Rahul_042') & 0x7fffffff % 3 → Partition 0
-    acks='all', retries=5
-    Partition 0 fills slowly (hours per segment)"]
+    subgraph FE_A ["2. ASYNC FEATURE ENGINE"]
+        CONSUME_A["KafkaReader Consumer<br/>At-Least-Once Delivery"]:::compute
+        REDIS_R_A[("Redis 7.2 Read (1 RTT)<br/>ZRANGEBYSCORE: 3-8 txns in 24h")]:::storage
+        COMP_A["In-Memory Feature Computation<br/>count_1h=2, z=0.2, travel_flag=0, hop=99"]:::compute
+        REDIS_W_A[("Redis Write (1 RTT)<br/>HSET serving vector: Rahul_042")]:::storage
+        COMMIT_A["Kafka Offset Commit<br/>reader.commit()"]:::compute
 
-    A4["MOD 2 — Kafka KRaft Broker
-    Appended to /transactions-raw/partition-0/
-    Active segment .log gets new record
-    Linux Page Cache dirty → kworker NVMe flush async
-    Offset assigned monotonically increasing"]
+        PART_A --> CONSUME_A --> REDIS_R_A --> COMP_A --> REDIS_W_A --> COMMIT_A
+    end
 
-    A5["MOD 3 — Feature Engine Consumer
-    group_id='feature_engine-cg'
-    enable_auto_commit=False
-    poll() → recv() from kernel socket buffer
-    Pydantic v2 Rust validation PASS ✓"]
+    subgraph SERVING_A ["3. SERVING HOT PATH (< 3.35ms)"]
+        CLIENT_A(["Payment Gateway / Client<br/>POST /score"]):::client
+        PARSE_A["Pydantic v2 Rust SIMD<br/>0.25ms Validation"]:::compute
+        CACHE_A{"L1 Cache Hit?"}:::decision
+        L1_HIT_A["L1 TTLCache Hit<br/>5µs Direct Heap Pointer"]:::storage
+        L2_GET_A[("Redis L2 HGETALL<br/>0.5ms Round-Trip")]:::storage
+        BATCH_A[["ModelBatcher Queue<br/>Immediate Pass-Through"]]:::stream
+        ONNX_A["ONNX Runtime C++<br/>AVX-512 SIMD (p_hat = 0.04)"]:::compute
 
-    A6["MOD 3 — Redis Pipelined Read (1 RTT = 0.5ms)
-    ZREMRANGEBYSCORE hkey 0 (now_ts-86400) → prune old
-    ZRANGEBYSCORE hkey (now_ts-86400) now_ts → fetch window
-    HGETALL lkey → last_seen baseline
-    Result: moderate history (3-8 txns in 24h)"]
+        CLIENT_A --> PARSE_A --> CACHE_A
+        CACHE_A -->|Hit: Repeat Txn| L1_HIT_A --> BATCH_A
+        CACHE_A -->|Miss: 1st Txn| L2_GET_A --> BATCH_A
+        BATCH_A --> ONNX_A
+    end
 
-    A7["MOD 3 — Feature Computation (In-Memory)
-    count_1h = 1-3 (LOW — normal retail)
-    count_24h = 3-8 (LOW)
-    amount_zscore = 0.2 (within 1σ of mean)
-    is_foreign_ip = FALSE (IN == IN)
-    impossible_travel_flag = 0 (Δt > 3600s)
-    shared_device_count = 0 (clean device)
-    hop_distance_to_fraud = 99 (not connected)"]
+    subgraph DECISION_A ["4. DECISION & IMMEDIATE RESPONSE"]
+        DEC_A{"Threshold Check: p_hat = 0.04 < 0.20?"}:::decision
+        APPROVE_A(["✅ TIER 1: AUTO-APPROVE<br/>Frictionless Checkout"]):::approve
+        RESP_A(["HTTP 200 OK<br/>orjson serialize: 18µs"]):::approve
 
-    A8["MOD 3 — Redis Pipelined Write (1 RTT)
-    ZADD hkey → append txn to ZSET history
-    EXPIRE hkey 86700 → refresh 24h TTL
-    HSET lkey → update last_seen hash
-    HSET fkey → write 17-feature serving vector
-    Postgres buffer enqueued (not yet flushed)
-    reader.commit() → offset committed to Kafka ✓"]
+        ONNX_A --> DEC_A
+        DEC_A -->|Yes| APPROVE_A --> RESP_A
+        RESP_A --> CLIENT_A
+    end
 
-    A9["MOD 4 — Serving: L1 TTLCache Check
-    self._cache.get('Rahul_042')
-    First request → MISS
-    Subsequent (burst): HIT → < 5 microseconds"]
+    subgraph ASYNC_A ["5. ASYNC AUDIT & FEEDBACK (OFF HOT PATH)"]
+        PG_A[("PostgreSQL 16 asyncpg<br/>INSERT predictions & snapshots")]:::storage
+        SHAP_A{"is_flagged == True?"}:::decision
+        SKIP_SHAP_A["Skip TreeSHAP<br/>Zero SLA Impact"]:::async
+        DRIFT_A["Drift Monitor Daemon<br/>PSI < 0.10 (STABLE)"]:::compute
+        LABEL_A[("Day 14-60 Ground Truth<br/>is_fraud = FALSE")]:::storage
+        BANDIT_A["Thompson Sampling<br/>Alpha, Beta Registers Stable"]:::compute
 
-    A10["MOD 4 — Circuit Breaker: CLOSED
-    redis_breaker state = CLOSED (healthy)
-    await client.hgetall('features:user:Rahul_042')
-    Redis HGETALL → 0.5ms round-trip
-    warm profile found → store in L1 cache ✓"]
-
-    A11["MOD 5 — FastAPI Serving (Uvicorn Worker)
-    SO_REUSEPORT kernel dispatch → Worker 2
-    Starlette ASGI receive → scope + payload
-    Pydantic v2 Rust parse: 0.25ms ✓
-    asyncio.gather(): velocity + baseline + graph (1.2ms)"]
-
-    A12["MOD 5 — Dynamic Micro-Batcher
-    future = loop.create_future()
-    await batcher.queue.put((vector, future))
-    await future → coroutine SUSPENDS
-    Batcher accumulates batch (up to 50 or 5ms)
-    np.array(vectors, float32) → shape (B, 17)"]
-
-    A13["MOD 5 — ONNX Runtime C++ Inference
-    Py_BEGIN_ALLOW_THREADS (GIL released)
-    AVX-512 SIMD: decision tree ensemble evaluation
-    Low features → LOW fraud probability
-    Py_END_ALLOW_THREADS (GIL re-acquired)
-    p̂ = 0.04 (very low risk)
-    Latency: ~0.8ms ✓"]
-
-    A14["MOD 6 — Three-Tier Decision Router
-    p̂ = 0.04 < 0.20 threshold
-    → TIER 1: AUTO-APPROVE ✓
-    is_flagged = False
-    No SHAP computation (not flagged)"]
-
-    A15["MOD 7 — Model Routing
-    MD5('txn_id') → deterministic seed
-    Thompson Sampling: θ_A* wins (mature model)
-    OR cold-start: 90% → Champion
-    ScoringMode.SHADOW: challenger also scores silently"]
-
-    A16["MOD 5 — Response
-    orjson.dumps() → 18µs SIMD Rust serialize
-    HTTP 200 OK → TCP socket → checkout service
-    P99: 3.35ms ✓ (SLA < 7ms)"]
-
-    A17["MOD 4 & 8 — Async Audit (Off Critical Path)
-    BackgroundTasks: asyncpg INSERT predictions + transactions
-    feature_snapshots enqueued in Postgres buffer
-    drift monitor polls every 5min → PSI stays low (stable)
-    No retrain triggered"]
-
-    A18["✅ TRANSACTION APPROVED
-    Customer completes checkout frictionlessly
-    Label arrives in 14-60 days: is_fraud=FALSE
-    PostgreSQL labels table updated
-    Thompson α unchanged, β unchanged"]
-
-    A1-->A2-->A3-->A4-->A5-->A6-->A7-->A8-->A9-->A10-->A11-->A12-->A13-->A14-->A15-->A16-->A17-->A18
+        APPROVE_A -.-> SHAP_A
+        SHAP_A -->|No: Approved| SKIP_SHAP_A --> PG_A
+        PG_A -.-> DRIFT_A
+        PG_A -.-> LABEL_A --> BANDIT_A
+    end
 ```
 
 ---
@@ -961,133 +508,63 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    B1["🤖 Bot / Stolen Card Testing
-    user_id='Priya_017' (compromised account)
-    _velocity_burst_remaining = 8 (burst triggered)
-    amount = 12 INR (micro-transaction)
-    ip_country = IN (proxied to look domestic)
-    TPS: 3,000 (massive automated burst)"]
+    classDef client fill:#E1F5FE,stroke:#0288D1,stroke-width:2px;
+    classDef stream fill:#FFF3E0,stroke:#F57C00,stroke-width:2px;
+    classDef storage fill:#E8F5E9,stroke:#388E3C,stroke-width:2px;
+    classDef compute fill:#EDE7F6,stroke:#512DA8,stroke-width:2px;
+    classDef decision fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px;
+    classDef decline fill:#FFEBEE,stroke:#D32F2F,stroke-width:2px;
+    classDef alert fill:#FFCDD2,stroke:#C62828,stroke-width:2px;
+    classDef stepup fill:#FFF8E1,stroke:#FFA000,stroke-width:2px;
 
-    B2["MOD 1 — Producer Runtime
-    SyntheticUser.fraud_type = 'velocity_spike'
-    _velocity_burst_remaining > 0 → inject pattern
-    txn.model_copy(update={'amount': random(5,50)})
-    Pydantic v2 immutable → new object returned
-    8 consecutive transactions fired rapidly"]
+    subgraph INGRESS_B ["1. INGRESS & HOT PARTITION SATURATION"]
+        BOT_B(["🤖 Botnet / Card-Testing Script<br/>Priya_017 | 8 Rapid Micro-Txns (12 INR) | 3000 TPS"]):::alert
+        BURST_B["Synthetic Producer<br/>velocity_spike burst injection"]:::compute
+        HOT_PART_B[["⚠️ Kafka Partition 1 (HOT PARTITION)<br/>1.5 MB/s | Fills segment in 11.3 min"]]:::alert
+        BOT_B --> BURST_B --> HOT_PART_B
+    end
 
-    B3["MOD 2 — Serialization & Hot Partition
-    Murmur2('Priya_017') % 3 → Partition 1
-    3,000 TPS × 500 bytes = 1.5 MB/s on Partition 1
-    RecordAccumulator fills 16KB batches in ~10ms
-    TCP send fires immediately (no linger wait)
-    Partition 1 segment fills in 11.3 MINUTES (vs days)
-    ⚠️ HOT PARTITION: Consumer lag builds here"]
+    subgraph FE_B ["2. ASYNC FEATURE ENGINE UNDER LOAD"]
+        FE_BURST_B["KafkaReader Consumer<br/>Polls batch of 50 burst records"]:::compute
+        REDIS_BURST_B[("Redis 7.2 Read (ZRANGEBYSCORE)<br/>Returns 7 prior burst records!")]:::storage
+        FE_ALARM_B["Feature Calculator ALARM<br/>count_1h = 9, same merchant, micro-amounts"]:::alert
+        REDIS_W_B[("Redis Write: serving vector count_1h=9")]:::storage
 
-    B4["MOD 2 — Kafka Broker Under Stress
-    Leader Partition 1: disk write queue saturation risk
-    Segment rolling every 11.3min (new .log files created)
-    Consumer group lag visible: 50,000+ messages behind
-    Broker metrics alert: bytes-in-per-sec spikes"]
+        HOT_PART_B --> FE_BURST_B --> REDIS_BURST_B --> FE_ALARM_B --> REDIS_W_B
+    end
 
-    B5["MOD 3 — Feature Engine Consumer
-    poll() returns batch of 50 velocity-spike records
-    Pydantic validation PASS (amounts > 0, valid schema)
-    now_ts extracted for each txn in batch
-    At-Least-Once: commit only after full batch processed"]
+    subgraph SERVING_B ["3. SERVING HOT PATH UNDER 3000 RPS FLOOD"]
+        SO_REUSE_B["Gunicorn SO_REUSEPORT<br/>Distributes 3000 RPS across 4 workers"]:::compute
+        L1_SHIELD_B["L1 TTLCache Shield (5µs)<br/>Txn 1: Miss | Txns 2-8: HIT<br/>98pct Redis Bypass Protects Hot Store!"]:::storage
+        MICRO_BATCH_B[["ModelBatcher Micro-Queue<br/>Fills to 50 items in 1ms"]]:::stream
+        ONNX_BATCH_B["ONNX Runtime C++ (AVX-512)<br/>Evaluates shape (50, 17) in 1.5ms"]:::compute
 
-    B6["MOD 3 — Redis Pipelined Read (Txn #8 in burst)
-    ZREMRANGEBYSCORE → prune nothing (all recent)
-    ZRANGEBYSCORE → returns 7 prior burst txns in window!
-    amounts_24h = [12, 8, 15, 11, 9, 14, 10, 12]
-    HGETALL → last_seen: 3 seconds ago, same country"]
+        BOT_B --> SO_REUSE_B --> L1_SHIELD_B --> MICRO_BATCH_B --> ONNX_BATCH_B
+    end
 
-    B7["MOD 3 — Feature Computation ALARM
-    count_1h = 8+1 = 9 (HIGH — normal max ~3)
-    count_24h = 9 (matches 1h, all in same burst)
-    amount_zscore = (12 - 11.4) / 2.3 = 0.26 (low variance)
-    is_foreign_ip = FALSE (proxied)
-    impossible_travel_flag = 0 (same country)
-    distinct_merchants_1h = 1 (same merchant — card testing!)
-    ⚠️ SIGNAL: high velocity + single merchant + micro amounts"]
+    subgraph DECISION_B ["4. DYNAMIC ESCALATING DECISION ROUTING"]
+        SCORE_FORK_B{"Burst Position & Score"}:::decision
+        STEPUP_B(["⚠️ TIER 2: STEP-UP AUTH (p_hat = 0.31-0.65)<br/>3D-Secure SMS OTP sent<br/>Bot Cannot Solve OTP -> Drops Off"]):::stepup
+        DECLINE_B(["🚫 TIER 3: HARD DECLINE (p_hat = 0.89 >= 0.78)<br/>Authorization Denied Immediately"]):::decline
 
-    B8["MOD 3 — Redis Write & Kafka Commit
-    ZADD hkey → 9th entry added to ZSET
-    EXPIRE hkey 86700 → TTL refreshed
-    HSET fkey → serving vector written with count_1h=9
-    reader.commit() after all 50 batch records processed
-    Duplicate replay protection: ZADD uniqueness (member=ts|amt|merchant)"]
+        ONNX_BATCH_B --> SCORE_FORK_B
+        SCORE_FORK_B -->|Txns 1-4: Moderate Velocity| STEPUP_B
+        SCORE_FORK_B -->|Txns 5-8: Extreme Velocity| DECLINE_B
+    end
 
-    B9["MOD 4 — L1 Cache: Burst Absorption
-    Txn 1: MISS → Redis fetch → cache (10s TTL)
-    Txns 2-8: HIT in < 5µs (98% Redis bypass)
-    ⚠️ But: each txn enriches feature vector
-    Serving reads L1 → stale features after first txn
-    Feature engine writes fresh vector to Redis between bursts"]
+    subgraph MLOPS_B ["5. ASYNC EXPLAINABILITY & MLOPS DEFENSE"]
+        SHAP_B["Async TreeSHAP (25ms off loop)<br/>Top Explanatory Feature: count_1h (+0.72)"]:::compute
+        PG_B[("PostgreSQL 16 Predictions")]:::storage
+        KS_TEST_B{"Two-Sample KS Test<br/>Prediction Drift p-val < 0.01?"}:::decision
+        SOC_ALERT_B>🚨 SOC SECURITY ALERT<br/>Active Attack Wave Detected<br/>CRITICAL: STRICTLY DO NOT RETRAIN! (Labels Unmatured)]:::alert
+        CHARGEBACK_B[("Day 14-60 Chargeback<br/>is_fraud = TRUE")]:::storage
+        THOMPSON_PENALTY_B["Thompson Sampling<br/>Beta Register Penalizes Bad Challenger"]:::compute
 
-    B10["MOD 4 — Circuit Breaker: CLOSED
-    Redis healthy under burst
-    Without L1 cache: 8 txns × 50 bots = 400 QPS on Redis
-    With L1 cache: Redis sees only ~8 QPS (burst absorbed)
-    shared_device_count = 2 (device shared with 1 other)
-    hop_distance_to_fraud = 3 (distant ring connection)"]
-
-    B11["MOD 5 — Serving: Burst Processing
-    SO_REUSEPORT spreads burst across 4 workers
-    Pydantic: micro-amounts pass validation (amount > 0)
-    Feature vector: count_1h=9, zscore=0.26, merchants=1
-    Micro-batcher fills to 50 quickly at 3000 RPS
-    Batch size trigger fires in ~16ms (50 txns in queue)"]
-
-    B12["MOD 5 — ONNX Batch Inference
-    np_batch shape = (50, 17) — full batch!
-    AVX-512: 50 txns evaluated in 1.5ms (vs 50×0.8ms=40ms)
-    GIL released during C++ execution
-    XGBoost ensemble: count_1h=9 is a STRONG split feature
-    p̂ range across batch: 0.31 to 0.89"]
-
-    B13["MOD 6 — Three-Tier Routing (per txn)
-    Early burst txns: p̂=0.31 → STEP-UP AUTH (0.20–0.78)
-    Middle burst: p̂=0.65 → STEP-UP AUTH
-    Later burst: p̂=0.89 → HARD DECLINE (≥0.78) is_flagged=True
-    Model learns: velocity builds with each txn → escalating scores"]
-
-    B14["MOD 6 — TreeSHAP Async (Flagged Txns Only)
-    asyncio.to_thread(_compute_and_store_shap)
-    Top 3 |φᵢ(x)|:
-    1. count_1h: +0.72 (highest contributor)
-    2. distinct_merchants_1h: +0.31
-    3. log_amount: -0.18 (micro-amount suspicious)
-    UPDATE predictions SET top_shap_features=... ✓"]
-
-    B15["MOD 7 — Thompson Sampling
-    seed = MD5('txn-burst-id-008') → deterministic
-    Both Champion + Shadow score same vector
-    Challenger may differ: logs to predictions for comparison
-    Feedback: when chargeback label arrives → β += FP count"]
-
-    B16["MOD 8 — Drift Detection Response
-    PSI: count_1h distribution shifts RIGHT (high values)
-    PSI score for count_1h = 0.42 > threshold 0.25
-    KS test on prediction probs: D large, p < 0.01
-    ⚠️ KS p < 0.01 → PREDICTION DRIFT detected!
-    Action: SOC ALERT fired — DO NOT retrain!
-    Reason: fraud labels not matured, retraining = poisoning"]
-
-    B17["MOD 9 — Resiliency Under 3000 RPS
-    Circuit breaker: CLOSED (Redis holding up with L1 help)
-    Locust P99: 6.85ms (SLA holds under burst)
-    Dashboard: fraud flag rate spikes → visible in Streamlit
-    If Redis fails: breaker trips OPEN → [0.0]×17 fallback
-    ONNX still scores on static features (amount, channel)"]
-
-    B18["🚨 OUTCOMES
-    STEP-UP txns: legitimate user challenges → bots drop off
-    HARD DECLINE txns: blocked immediately
-    SOC receives alert → WAF IP blocks deployed
-    Chargeback arrives 14-60 days later → labels table
-    Thompson: β += (FP + FN) → challenger punished if worse"]
-
-    B1-->B2-->B3-->B4-->B5-->B6-->B7-->B8-->B9-->B10-->B11-->B12-->B13-->B14-->B15-->B16-->B17-->B18
+        DECLINE_B -.-> SHAP_B --> PG_B
+        PG_B -.-> KS_TEST_B
+        KS_TEST_B -->|Yes: Attack| SOC_ALERT_B
+        PG_B -.-> CHARGEBACK_B --> THOMPSON_PENALTY_B
+    end
 ```
 
 ---
@@ -1096,122 +573,58 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    C1["💳 Legitimate User — Unusual Large Purchase
-    user_id='Amit_088'
-    typical_amount = 95 INR (Gaussian baseline)
-    THIS transaction: amount = 3,800 INR (40× typical)
-    ip_country = IN (home country, genuine user)
-    device_id = stable-uuid (known device)"]
+    classDef client fill:#E1F5FE,stroke:#0288D1,stroke-width:2px;
+    classDef stream fill:#FFF3E0,stroke:#F57C00,stroke-width:2px;
+    classDef storage fill:#E8F5E9,stroke:#388E3C,stroke-width:2px;
+    classDef compute fill:#EDE7F6,stroke:#512DA8,stroke-width:2px;
+    classDef decision fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px;
+    classDef approve fill:#E8F8F5,stroke:#00B894,stroke-width:2px;
+    classDef decline fill:#FFEBEE,stroke:#D32F2F,stroke-width:2px;
+    classDef stepup fill:#FFF8E1,stroke:#FFA000,stroke-width:2px;
 
-    C2["MOD 1 — Producer: Amount Outlier Pattern
-    fraud_type = 'amount_outlier' (5% injection)
-    amount_override = typical_amount × random(15, 50) = 95 × 40 = 3800
-    txn = txn.model_copy(update={'amount': 3800.0})
-    Pydantic: amount=3800.0 >= 0 → PASS
-    Single transaction (no burst)"]
+    subgraph INGRESS_C ["1. INGRESS & HISTORICAL BASELINE"]
+        USER_C(["💳 Genuine Cardholder<br/>Amit_088 | Baseline: 95 INR | THIS TXN: 3,800 INR (40x)"]):::client
+        PROD_C["Synthetic Producer<br/>amount_outlier pattern injection"]:::compute
+        PART_C[["Kafka Partition 2<br/>Normal Retail Ingestion"]]:::stream
+        USER_C --> PROD_C --> PART_C
+    end
 
-    C3["MOD 2 — Kafka Routing
-    Murmur2('Amit_088') % 3 → Partition 2
-    Normal TPS (single txn) → batch accumulates slowly
-    linger.ms wait → batch sent after timeout
-    Offset committed to partition log normally"]
+    subgraph FE_C ["2. ASYNC FEATURE ENGINE: Z-SCORE CALCULATION"]
+        FE_C_CONSUME["KafkaReader Consumer"]:::compute
+        REDIS_C_HIST[("Redis 7.2 Read<br/>24h History: mean=93.7 INR, stdev=7.6 INR")]:::storage
+        Z_SCORE_CALC["Statistical Z-Score Engine<br/>Z = (3800 - 93.7) / 7.6 = +487.5 (EXTREME OUTLIER)<br/>count_1h=1, domestic=True"]:::compute
+        REDIS_C_WRITE[("Redis Write: serving vector with zscore=487.5")]:::storage
 
-    C4["MOD 3 — Feature Engine
-    poll() returns single record
-    Pydantic v2 validation: amount=3800 passes (>=0)
-    now_ts extracted
-    hkey = 'feature_engine:history:Amit_088'"]
+        PART_C --> FE_C_CONSUME --> REDIS_C_HIST --> Z_SCORE_CALC --> REDIS_C_WRITE
+    end
 
-    C5["MOD 3 — Redis Pipelined Read
-    ZRANGEBYSCORE returns 24h history:
-    [80, 102, 91, 88, 97, 105, 93] INR (7 normal txns)
-    HGETALL: last_seen 4 hours ago, same country
-    amounts_24h = [80, 102, 91, 88, 97, 105, 93]"]
+    subgraph SERVING_C ["3. SERVING HOT PATH (< 3.35ms)"]
+        PARSE_C["Pydantic v2 Rust SIMD<br/>amount=3800.0 passes validation"]:::compute
+        CACHE_C[("Redis L2 Fresh Read<br/>vector with zscore=487.5")]:::storage
+        ORT_C["ONNX Runtime C++<br/>Split: zscore >= 3.5 (Yes) but count_1h <= 2 (Yes)<br/>p_hat = 0.51 (Moderate Confidence)"]:::compute
 
-    C6["MOD 3 — Feature Computation: Z-SCORE ALARM
-    μ_24h = statistics.fmean([80,102,91,88,97,105,93]) = 93.7
-    σ_24h = statistics.pstdev([80,102,91,88,97,105,93]) = 7.6
-    Z = (3800 - 93.7) / 7.6 = +487.5 ← EXTREME OUTLIER
-    count_1h = 1 (not a velocity event)
-    is_foreign_ip = FALSE
-    impossible_travel_flag = 0
-    log_amount = log1p(3800) = 8.24 (vs normal ~4.5)
-    shared_device_count = 0, hop_distance = 99"]
+        USER_C --> PARSE_C --> CACHE_C --> ORT_C
+    end
 
-    C7["MOD 3 — Redis Write
-    member = f'{now_ts}|3800.0|merchant_xyz'
-    ZADD hkey → appended with score=now_ts
-    HSET fkey → serving vector: amount_zscore=487.5
-    EXPIRE hkey 86700 (TTL refreshed)
-    Postgres buffer: feature_snapshot with zscore=487.5
-    Kafka offset committed ✓"]
+    subgraph DECISION_C ["4. THREE-TIER ROUTING & STEP-UP CHALLENGE"]
+        DEC_C{"Threshold Check: 0.20 <= p_hat = 0.51 < 0.78?"}:::decision
+        STEPUP_C(["🟡 TIER 2: STEP-UP AUTH<br/>3D-Secure 2.0 Biometric / SMS OTP Challenge"]):::stepup
+        AUTH_FORK_C{"Cardholder Verification Result?"}:::decision
+        APPROVE_C(["✅ Verification Passed (Amit enters OTP)<br/>Transaction Approved (False Positive Avoided!)"]):::approve
+        ABANDON_C(["🚫 Verification Failed (Thief cannot solve OTP)<br/>Session Abandoned (Fraud Prevented via Friction)"]):::decline
 
-    C8["MOD 4 — Serving: L1 Cache Miss (new large txn)
-    self._cache.get('Amit_088') → warm profile found
-    Returns cached vector from prior normal txns
-    ⚠️ But cache has stale zscore (normal z≈0.3)
-    Feature engine writes new vector → Redis updated
-    Next L1 TTL (10s) expiry → fresh read from Redis"]
+        ORT_C --> DEC_C
+        DEC_C -->|Yes: Step-Up| STEPUP_C --> AUTH_FORK_C
+        AUTH_FORK_C -->|Legitimate Amit| APPROVE_C
+        AUTH_FORK_C -->|Stolen Card| ABANDON_C
+    end
 
-    C9["MOD 4 — Circuit Breaker CLOSED
-    HGETALL returns fresh vector with zscore=487.5
-    is_cold_start = False (Amit has history)
-    self._cache['Amit_088'] = new vector (10s TTL)
-    shared_device_count=0, hop_distance=99 (clean)"]
+    subgraph MLOPS_C ["5. ASYNC AUDIT & STABILITY"]
+        PG_C[("PostgreSQL 16 Predictions Audit")]:::storage
+        DRIFT_C["Drift Monitor Daemon<br/>Single outlier does NOT skew decile bins<br/>PSI < 0.10 (STABLE) - No Retrain"]:::compute
 
-    C10["MOD 5 — FastAPI Serving
-    Pydantic parse: amount=3800 passes (no upper bound)
-    asyncio.gather(): velocity(1.2ms) + baseline(1.0ms) + graph(0.8ms)
-    Feature vector assembled: zscore=487.5 dominant signal
-    Micro-batcher: single txn waits up to 5ms window
-    Batch shape (1, 17) or accumulated with others"]
-
-    C11["MOD 5 — ONNX Inference
-    Decision tree split: 'amount_zscore >= 3.5?' → YES (487.5)
-    'count_1h <= 2?' → YES (normal frequency)
-    'is_foreign_ip == 0?' → YES (domestic)
-    Result: moderate-high fraud probability
-    p̂ = 0.51 (high z-score but no other red flags)"]
-
-    C12["MOD 6 — Three-Tier Routing
-    p̂ = 0.51: 0.20 ≤ 0.51 < 0.78
-    → TIER 2: STEP-UP AUTH
-    3D-Secure 2.0: SMS OTP sent to Amit's phone
-    If Amit is real: enters OTP → transaction approved
-    If stolen card: thief doesn't have phone → drops"]
-
-    C13["MOD 6 — No SHAP (Not Flagged)
-    is_flagged = False (p̂ < 0.78)
-    HTTP 200 returned immediately: 3.35ms P99
-    top_shap_features = {} in response
-    No background TreeSHAP computation"]
-
-    C14["MOD 7 — Model Routing
-    Deterministic hash → Champion selected
-    Shadow scores 0.49 (small divergence — model variant)
-    Both predictions logged to PostgreSQL
-    Shadow result stored for A/B metric comparison"]
-
-    C15["MOD 8 — Drift Monitor
-    amount_zscore PSI: single outlier doesn't shift distribution
-    PSI for zscore feature remains < 0.10 (STABLE)
-    If many outliers appear → PSI would spike → retrain
-    No retrain triggered for single Type 3 event"]
-
-    C16["MOD 9 — Observability
-    Latency: P99 3.35ms ✓ (single txn, no batch saturation)
-    Dashboard: flag rate unchanged (not is_flagged)
-    If Amit completes OTP: label = FALSE (legitimate)
-    If Amit ignores/abandons: no label (timeout scenario)"]
-
-    C17["🟡 OUTCOME: STEP-UP AUTH
-    Real Amit: OTP verified → purchase completes
-    Stolen card: thief drops off → fraud prevented
-    Chargeback (if any): arrives in 14-60 days
-    PostgreSQL labels.is_fraud updated when confirmed
-    Thompson: TP++ if fraud caught via step-up"]
-
-    C1-->C2-->C3-->C4-->C5-->C6-->C7-->C8-->C9-->C10-->C11-->C12-->C13-->C14-->C15-->C16-->C17
+        APPROVE_C & ABANDON_C -.-> PG_C -.-> DRIFT_C
+    end
 ```
 
 ---
@@ -1220,136 +633,60 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    D1["✈️ Credential Theft / SIM Swap / Proxy Attack
-    user_id='Neha_031'
-    PREVIOUS txn: 2 minutes ago in India (IN)
-    THIS txn: ip_country = 'US' (United States)
-    Δt = now_ts - last_ts = 90 seconds
-    new device_id = 'unknown-device-aa77' (unrecognized)
-    amount = 220 INR (normal looking amount)"]
+    classDef client fill:#E1F5FE,stroke:#0288D1,stroke-width:2px;
+    classDef stream fill:#FFF3E0,stroke:#F57C00,stroke-width:2px;
+    classDef storage fill:#E8F5E9,stroke:#388E3C,stroke-width:2px;
+    classDef compute fill:#EDE7F6,stroke:#512DA8,stroke-width:2px;
+    classDef decision fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px;
+    classDef decline fill:#FFEBEE,stroke:#D32F2F,stroke-width:2px;
+    classDef alert fill:#FFCDD2,stroke:#C62828,stroke-width:2px;
 
-    D2["MOD 1 — Producer: Impossible Travel Pattern
-    fraud_type = 'impossible_travel'
-    ip_country overridden → foreign country
-    timestamp = last_txn_time + random(1, 10) seconds
-    new device_id injected (simulates unknown device)
-    txn.model_copy(update={'ip_country':'US','device_id':'aa77',...})"]
+    subgraph INGRESS_D ["1. INGRESS & CHRONOLOGICAL ORDER GUARANTEE"]
+        ATTACKER_D(["✈️ Credential Thief / SIM Swap<br/>Neha_031 | 90s after India Txn | Foreign IP (US) | New Device"]):::alert
+        PROD_D["Synthetic Producer<br/>impossible_travel pattern injection"]:::compute
+        PART_D[["Kafka Partition 0<br/>Murmur2(Neha_031): Preserves Strict Chronological Ordering!"]]:::stream
 
-    D3["MOD 2 — Kafka Routing
-    Murmur2('Neha_031') % 3 → Partition 0 (same as always)
-    Per-user partition: prior IN txn AND this US txn on same partition
-    Ordering preserved: prior txn offset < this txn offset
-    Feature engine sees them in correct chronological order ✓"]
+        ATTACKER_D --> PROD_D --> PART_D
+    end
 
-    D4["MOD 3 — Feature Engine Consumer
-    poll() returns this txn (processed after prior IN txn)
-    now_ts = current epoch (90 seconds after last_ts in HGETALL)
-    hkey = 'feature_engine:history:Neha_031'
-    lkey = 'feature_engine:last_seen:Neha_031'"]
+    subgraph FE_D ["2. ASYNC FEATURE ENGINE: VELOCITY HEURISTIC"]
+        FE_D_CONSUME["KafkaReader Consumer"]:::compute
+        REDIS_LAST_D[("Redis HASH: last_seen<br/>last_country = 'IN', last_ts = now - 90s")]:::storage
+        HEURISTIC_D["Impossible Travel Heuristic Engine<br/>delta_t = 90s <= 3600s AND country_curr (US) != country_last (IN)<br/>Required Speed: 12,000 km / 90s = 133 km/s (IMPOSSIBLE!)<br/>impossible_travel_flag = 1, is_foreign_ip = 1"]:::alert
+        REDIS_W_D[("Redis Write: serving vector with travel_flag=1")]:::storage
 
-    D5["MOD 3 — Redis Pipelined Read
-    ZRANGEBYSCORE: returns recent history (prior IN txn in window)
-    HGETALL lkey:
-      last_ts = now_ts - 90.0
-      last_ip_country = 'IN'
-      last_device_id = 'stable-uuid-neha' (known device)
-    Critical: last_country='IN', this_country='US', Δt=90s"]
+        PART_D --> FE_D_CONSUME --> REDIS_LAST_D --> HEURISTIC_D --> REDIS_W_D
+    end
 
-    D6["MOD 3 — Impossible Travel Heuristic TRIGGERS
-    Δt = now_ts - float(last_seen['last_ts']) = 90.0 seconds
-    country_current = 'US' ≠ country_last = 'IN'
-    Δt = 90s ≤ 3600s threshold
-    ✈️ ImpossibleTravelFlag = 1 ← CRITICAL SIGNAL
-    Physical velocity required: 12,000 km / 90s = 133 km/s (impossible!)
-    is_foreign_ip = TRUE (US ≠ IN home_country)
-    new device: shared_device_count check → unknown device"]
+    subgraph SERVING_D ["3. SERVING HOT PATH (< 3.35ms)"]
+        PARSE_D["Pydantic v2 Rust SIMD<br/>country='US' | 0.25ms"]:::compute
+        L2_D[("Redis L2 HGETALL<br/>travel_flag=1, foreign_ip=1")]:::storage
+        ORT_D["ONNX Runtime C++ (AVX-512)<br/>Decision Tree Split: travel_flag=1 & foreign_ip=1<br/>p_hat = 0.94 (Extreme Risk)"]:::compute
 
-    D7["MOD 4 — Neo4j Graph (async background)
-    GraphWriter: MERGE (Neha)-[:USED_DEVICE]->(aa77:Device)
-    aa77 is NEW — no prior associations
-    Background query: shared_device_count for aa77 = 0 (new device)
-    hop_distance_to_fraud = 99 (not yet connected)
-    Graph risk precomputed → Redis hash updated async"]
+        ATTACKER_D --> PARSE_D --> L2_D --> ORT_D
+    end
 
-    D8["MOD 3 — Redis Write
-    member = f'{now_ts}|220.0|merchant_us_01'
-    ZADD hkey → appended to ZSET (US merchant recorded)
-    HSET lkey → OVERWRITE: last_country='US', last_device='aa77'
-    HSET fkey → serving vector: impossible_travel_flag=1
-    is_foreign_ip=1
-    Kafka offset committed AFTER all writes ✓"]
+    subgraph DECISION_D ["4. THREE-TIER ROUTING: HARD DECLINE"]
+        DEC_D{"Threshold Check: p_hat = 0.94 >= 0.78?"}:::decision
+        DECLINE_D(["🚫 TIER 3: HARD DECLINE<br/>Authorization Denied in 3.35ms"]):::decline
 
-    D9["MOD 4 — Serving: Feature Hydration
-    L1 cache: 'Neha_031' → HIT (10s TTL, warm)
-    ⚠️ Stale cache: may have old impossible_travel_flag=0!
-    If TTL expired → Redis HGETALL → fresh flag=1
-    Circuit breaker: CLOSED, Redis healthy
-    Fresh vector: impossible_travel_flag=1, is_foreign_ip=1"]
+        ORT_D --> DEC_D
+        DEC_D -->|Yes: Extreme Risk| DECLINE_D
+    end
 
-    D10["MOD 5 — FastAPI Serving
-    Pydantic parse: ip_country='US' → upper() → 'US' ✓
-    Feature vector assembled:
-      impossible_travel_flag = 1
-      is_foreign_ip = 1
-      count_1h = 2 (prior + this txn)
-      amount_zscore = 0.8 (amount not unusual alone)
-    Micro-batcher: enqueue, await future, suspend"]
+    subgraph ASYNC_D ["5. ASYNC EXPLAINABILITY, SOC ALERT & DEFENSE"]
+        SHAP_D["Async TreeSHAP Execution (25ms off loop)<br/>Top Explanatory Feature: impossible_travel_flag (+0.81)"]:::compute
+        PG_D[("PostgreSQL 16 Predictions<br/>Satisfies GDPR Article 22 & FCRA")]:::storage
+        KS_D{"KS Test on Live Scores<br/>p-val < 0.01?"}:::decision
+        SOC_D>🚨 SOC SECURITY ALERT: Geo-Spoofing Wave<br/>Automated WAF Geo-Block Rules Deployed]:::alert
+        LABEL_D[("Day 30: Real Neha Reports Theft<br/>is_fraud = TRUE")]:::storage
+        THOMPSON_D["Thompson Sampling<br/>Alpha += 1 (Fraud Correctly Prevented)"]:::compute
 
-    D11["MOD 5 — ONNX Inference
-    Decision tree key splits:
-    'impossible_travel_flag >= 0.5?' → YES (=1)
-    'is_foreign_ip >= 0.5?' → YES (=1)
-    Both flags together → very strong fraud signal
-    p̂ = 0.94 (extremely high risk)
-    Latency: ~0.8ms ✓"]
-
-    D12["MOD 6 — Three-Tier Routing
-    p̂ = 0.94 >= 0.78 (F₀.₅ optimal threshold τ*)
-    → TIER 3: HARD DECLINE
-    is_flagged = True
-    HTTP 200 returned: 'decision: decline' in 3.35ms
-    Payment network notified: authorization denied"]
-
-    D13["MOD 6 — TreeSHAP Async Triggered
-    is_flagged=True → BackgroundTasks.add_task()
-    asyncio.to_thread(_compute_and_store_shap)
-    ThreadPoolExecutor runs TreeSHAP (25ms, off event loop)
-    Top 3 |φᵢ(x)|:
-    1. impossible_travel_flag: +0.81 (dominant)
-    2. is_foreign_ip: +0.49
-    3. log_amount: +0.12
-    UPDATE predictions SET top_shap_features=... (GDPR Article 22) ✓"]
-
-    D14["MOD 7 — Model Routing
-    MD5('txn-neha-impossible') → deterministic seed
-    Champion model selected (mature θ* from Beta posterior)
-    Shadow: challenger also scores p̂=0.91 (similar high score)
-    Both logged → confirms both models agree on this case"]
-
-    D15["MOD 8 — Drift Monitor
-    impossible_travel_flag: live distribution shifts
-    If many travel attacks → PSI for is_foreign_ip spikes
-    KS test on prediction probs: scores spike high (p < 0.01)
-    ⚠️ KS p < 0.01 → PREDICTION DRIFT!
-    SOC ALERT: active travel spoofing campaign
-    DO NOT retrain (labels not matured)
-    Action: WAF geo-blocking rules deployed"]
-
-    D16["MOD 9 — Resiliency
-    P99 latency: 3.35ms ✓ (single hard decline path)
-    Dashboard: impossible_travel cases spike in flag rate chart
-    Circuit breaker: unaffected (single-path transaction)
-    Locust test: reproduces this exact payload for SLA verification"]
-
-    D17["🟣 OUTCOME: HARD DECLINE
-    Transaction blocked in < 7ms
-    Real Neha (credential theft): card issuer alerted
-    Chargeback filed: 30 days later (by real Neha)
-    PostgreSQL labels: is_fraud=TRUE, confirmed_at=date
-    Thompson: α += TP (fraud correctly caught)
-    Model reinforced: impossible_travel is high-precision feature"]
-
-    D1-->D2-->D3-->D4-->D5-->D6-->D7-->D8-->D9-->D10-->D11-->D12-->D13-->D14-->D15-->D16-->D17
+        DECLINE_D -.-> SHAP_D --> PG_D
+        PG_D -.-> KS_D
+        KS_D -->|Yes| SOC_D
+        PG_D -.-> LABEL_D --> THOMPSON_D
+    end
 ```
 
 ---
@@ -1358,138 +695,80 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    E1["🕸️ Organized Fraud Ring Member
-    user_id='Deepak_155'
-    Looks normal on its own: amount=340 INR, domestic
-    BUT: device shared with 12 confirmed fraudsters
-    hop_distance_to_fraud = 2 (2 hops to FlaggedFraud node)
-    ip_country = IN, normal TPS (1 txn)"]
+    classDef client fill:#E1F5FE,stroke:#0288D1,stroke-width:2px;
+    classDef stream fill:#FFF3E0,stroke:#F57C00,stroke-width:2px;
+    classDef storage fill:#E8F5E9,stroke:#388E3C,stroke-width:2px;
+    classDef compute fill:#EDE7F6,stroke:#512DA8,stroke-width:2px;
+    classDef decision fill:#FFF9C4,stroke:#FBC02D,stroke-width:2px;
+    classDef approve fill:#E8F8F5,stroke:#00B894,stroke-width:2px;
+    classDef decline fill:#FFEBEE,stroke:#D32F2F,stroke-width:2px;
+    classDef stepup fill:#FFF8E1,stroke:#FFA000,stroke-width:2px;
+    classDef async fill:#ECEFF1,stroke:#607D8B,stroke-width:1.5px,stroke-dasharray: 4 4;
 
-    E2["MOD 1 — Producer
-    No explicit fraud pattern injected for this user
-    Appears as TYPE 1 (normal retail) to producer
-    Graph ring membership only discoverable by Neo4j
-    SyntheticUser: typical_amount~Gaussian, domestic country
-    seed=42 deterministic: same ring topology every run"]
+    subgraph INGRESS_E ["1. INGRESS (APPEARS AS NORMAL RETAIL)"]
+        RING_E(["🕸️ Organized Fraud Ring Member<br/>Deepak_155 | 340 INR Domestic | Looks Normal on Surface"]):::client
+        PROD_E["Synthetic Producer<br/>No explicit fraud flag (unsupervised ring member)"]:::compute
+        PART_E[["Kafka Partition 2<br/>Normal Ingestion Cadence"]]:::stream
 
-    E3["MOD 2 — Kafka Routing
-    Murmur2('Deepak_155') % 3 → Partition 2
-    Normal retail pattern: single txn, slow accumulation
-    Partition 2: batch waits for linger.ms
-    Offset assigned: appears identical to TYPE 1 in log"]
+        RING_E --> PROD_E --> PART_E
+    end
 
-    E4["MOD 3 — Feature Engine Consumer
-    poll() → receives Deepak's transaction
-    Pydantic v2 Rust validation PASS ✓
-    now_ts extracted
-    Looks like normal TYPE 1 at this stage"]
+    subgraph GRAPH_E ["2. ASYNC GRAPH INTELLIGENCE (NEO4J 5.20)"]
+        GRAPH_WRITER["GraphWriter Worker<br/>Consumes Kafka transactions.streaming"]:::compute
+        NEO4J_DB[("Neo4j 5.20 Property Graph (IFA)<br/>MERGE (u:User)-[:USED_DEVICE]->(d:Device)")]:::storage
+        CYPHER_JOB["Background Graph Analytics<br/>MATCH (Deepak)-[:USED_DEVICE]->(d)<-[:USED_DEVICE]-(other)<br/>shared_device_count = 12 (Device Farm)<br/>shortestPath to FlaggedFraud = 2 hops"]:::compute
+        GRAPH_SYNC["Periodic Redis Sync<br/>HSET features:user:Deepak_155"]:::async
 
-    E5["MOD 3 — Redis Pipelined Read
-    ZRANGEBYSCORE: 5 prior txns in 24h (normal history)
-    amounts_24h = [310, 290, 355, 330, 320]
-    HGETALL: last_seen 3h ago, same country, known device
-    Features so far: velocity=normal, zscore=0.4 (fine)"]
+        PART_E -.-> GRAPH_WRITER --> NEO4J_DB --> CYPHER_JOB --> GRAPH_SYNC
+    end
 
-    E6["MOD 3 — Feature Computation: Normal Individual Profile
-    count_1h = 1 (normal)
-    amount_zscore = (340-321)/22 = 0.86 (acceptable)
-    is_foreign_ip = FALSE
-    impossible_travel_flag = 0
-    log_amount = log1p(340) = 5.83 (normal range)
-    ⚠️ MISSING: graph features NOT yet in Redis hash!
-    Graph analytics runs async — may be lagging"]
+    subgraph FE_E ["3. ASYNC FEATURE ENGINE HYDRATION"]
+        FE_E_CONSUME["KafkaReader Consumer"]:::compute
+        REDIS_E_READ[("Redis Read (ZRANGEBYSCORE)<br/>Local features: count_1h=1, z=0.86")]:::storage
+        VECTOR_ASSEMBLE["Feature Vector Assembly<br/>Merges local velocity with graph signals:<br/>shared_device_count=12, hop_distance=2"]:::compute
+        REDIS_E_WRITE[("Redis Write: 17-float serving vector")]:::storage
 
-    E7["MOD 4 — Neo4j Graph Analytics (Async Background)
-    GraphWriter consumed prior txns from Kafka stream
-    Graph built: (Deepak)-[:USED_DEVICE]->(device_XYZ)
-    Background query: MATCH (Deepak)-[:USED_DEVICE]->(d)<-[:USED_DEVICE]-(other)
-    RETURN count(DISTINCT other) = 12 ← HIGH
-    shortestPath((Deepak)-[*..5]-(fraud:FlaggedFraud))
-    hops = 2 ← CLOSE TO CONFIRMED FRAUDSTER
-    HSET features:user:Deepak_155 shared_device_count=12 hop_distance=2"]
+        PART_E --> FE_E_CONSUME --> REDIS_E_READ --> VECTOR_ASSEMBLE --> REDIS_E_WRITE
+        GRAPH_SYNC -.-> VECTOR_ASSEMBLE
+    end
 
-    E8["MOD 3 — Redis Write (Feature Engine)
-    member = f'{now_ts}|340.0|merchant_retail_01'
-    ZADD hkey → append to ZSET
-    HSET fkey → serving vector written
-    IF graph analytics already updated Redis:
-      shared_device_count=12, hop_distance_to_fraud=2 included ✓
-    IF graph analytics lagging:
-      shared_device_count=0, hop_distance=99 (stale — false negative risk)
-    Kafka offset committed after write ✓"]
+    subgraph SERVING_E ["4. SERVING HOT PATH (< 3.35ms)"]
+        PARSE_E["Pydantic v2 Rust SIMD: 0.25ms"]:::compute
+        L2_E[("Redis L2 HGETALL: shared=12, hop=2")]:::storage
+        ORT_E["ONNX Runtime C++ (AVX-512)<br/>Split: shared_device >= 5 (Yes) + hop_distance <= 3 (Yes)<br/>p_hat = 0.73 (High Risk)"]:::compute
 
-    E9["MOD 4 — Serving: L1 Cache
-    self._cache.get('Deepak_155') → MISS (first request)
-    Circuit breaker: CLOSED
-    HGETALL features:user:Deepak_155
-    Returns vector WITH graph features (if Neo4j sync happened)
-    shared_device_count=12, hop_distance_to_fraud=2
-    Stored in L1 cache (10s TTL)"]
+        RING_E --> PARSE_E --> L2_E --> ORT_E
+    end
 
-    E10["MOD 5 — FastAPI Serving
-    Pydantic parse: 0.25ms ✓
-    asyncio.gather(): velocity + baseline + graph (1.2ms)
-    Feature vector:
-      count_1h=1, zscore=0.86, travel_flag=0
-      shared_device_count=12 ← KEY FEATURE
-      hop_distance_to_fraud=2 ← KEY FEATURE
-    Micro-batcher: enqueue (vector, future), suspend"]
+    subgraph DECISION_E ["5. THREE-TIER ROUTING & MLOPS RETRAINING"]
+        DEC_E{"Threshold Check: 0.20 <= p_hat = 0.73 < 0.78?"}:::decision
+        STEPUP_E(["🟡 TIER 2: STEP-UP AUTH<br/>SMS OTP / Biometric Challenge"]):::stepup
+        NOTE_E["Note: If hop_distance = 1, p_hat >= 0.78 -> HARD DECLINE"]:::async
+        CHALLENGE_FORK{"Challenge Outcome?"}:::decision
+        MULE_VERIF(["Unwitting Mule Verifies (Chargeback Later)"]):::approve
+        RING_DROP(["🚫 Ring Member Drops Off (Fraud Blocked)"]):::decline
 
-    E11["MOD 5 — ONNX Inference
-    Decision tree splits:
-    'shared_device_count >= 5?' → YES (=12)
-    'hop_distance_to_fraud <= 3?' → YES (=2)
-    'amount_zscore < 2.0?' → YES (not an outlier)
-    Tree consensus: device farm + fraud proximity = fraud ring
-    p̂ = 0.73 (high but not extreme — missing travel flag)"]
+        ORT_E --> DEC_E
+        DEC_E -->|Marginal Distance| STEPUP_E
+        STEPUP_E --- NOTE_E
+        STEPUP_E --> CHALLENGE_FORK
+        CHALLENGE_FORK -->|Mule| MULE_VERIF
+        CHALLENGE_FORK -->|Bot / Thief| RING_DROP
+    end
 
-    E12["MOD 6 — Three-Tier Routing
-    p̂ = 0.73: 0.20 ≤ 0.73 < 0.78
-    → TIER 2: STEP-UP AUTH (barely below hard-decline threshold)
-    3D-Secure SMS OTP sent to Deepak's phone
-    If Deepak is an unwitting mule: may verify → transaction completes
-    If Deepak is active ring member: drops or uses SIM"]
+    subgraph MLOPS_E ["6. MLOPS FEATURE DRIFT & RETRAINING LOOP"]
+        PG_E[("PostgreSQL 16 Predictions Audit")]:::storage
+        PSI_E{"PSI on shared_device_count<br/>PSI = 0.31 >= 0.25?"}:::decision
+        COOLDOWN_E{"Cooldown < 60m?"}:::decision
+        RETRAIN_E["Automated Retrain Triggered<br/>XGBoost: scale_pos_weight=499"]:::compute
+        MLFLOW_E["MLflow Registry -> Hot Reload Pointer Swap (<1µs)"]:::compute
 
-    E13["MOD 6 — No SHAP (Not Flagged at p̂=0.73)
-    is_flagged = False (p̂ < 0.78)
-    HTTP 200 returned in 3.35ms
-    top_shap_features = {} (not computed)
-    NOTE: If hop_distance=1, p̂ would be ≥0.78 → HARD DECLINE + SHAP"]
-
-    E14["MOD 7 — Model Routing
-    MD5('txn-deepak-ring') → deterministic seed
-    Thompson sampling: θ_A* wins (Champion)
-    Shadow: Challenger scores p̂=0.78 (at the boundary!)
-    Both predictions logged → A/B metrics compared
-    Challenger may be more aggressive on graph features"]
-
-    E15["MOD 8 — Drift Monitor
-    shared_device_count PSI: if many ring members score
-    Large device farms → PSI spike for this feature
-    PSI = 0.31 (> 0.25 threshold) for shared_device_count
-    Feature drift detected → cooldown check
-    If cooldown elapsed: RETRAIN triggered with matured labels
-    New model learns: hop_distance=2 + shared=12 is reliable signal"]
-
-    E16["MOD 9 — Observability
-    Dashboard: step-up rate elevated (ring members hitting 0.20-0.78)
-    Precision metric (via INNER JOIN labels):
-    TP: ring members who complete OTP and later chargeback
-    FP: legitimate users sharing apartment/family device
-    SQL NULLIF protection: prevents zero-division if no labels yet"]
-
-    E17["🔵 OUTCOME: STEP-UP AUTH
-    Ring member drops off → fraud prevented via friction
-    Innocent device-sharer: OTP verified → approved (FP avoided)
-    If chargeback arrives: label=TRUE
-    Thompson: α += TP (ring member caught)
-    Graph: (Deepak) may get FlaggedFraud label
-    Future users 1 hop from Deepak → hop_distance=1 → HARD DECLINE"]
-
-    E1-->E2-->E3-->E4-->E5-->E6-->E7-->E8-->E9-->E10-->E11-->E12-->E13-->E14-->E15-->E16-->E17
+        MULE_VERIF & RING_DROP -.-> PG_E -.-> PSI_E
+        PSI_E -->|Yes: Feature Drift| COOLDOWN_E
+        COOLDOWN_E -->|No: Elapsed| RETRAIN_E --> MLFLOW_E
+        MLFLOW_E -.->|Hot Reload Session| ORT_E
+    end
 ```
-
----
 
 ## 🧭 Cross-Chart Decision Comparison
 
